@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0d12">
+  <meta name="description" content="Пепел и Вереск — кооперативная тёмная сказка о памяти. Локальная игра по WiFi.">
+  <title>Пепел и Вереск</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="game" aria-label="Игровое поле"></canvas>
+  <div id="vignette" aria-hidden="true"></div>
+  <div id="menu-ash" aria-hidden="true"></div>
+
+  <!-- ГЛАВНОЕ МЕНЮ -->
+  <section id="menu" class="screen menu-screen">
+    <div class="menu-fog fog-a"></div>
+    <div class="menu-fog fog-b"></div>
+    <div class="menu-content">
+      <div class="menu-kicker">локальная сказка · 1–4 игрока</div>
+      <h1 class="game-title">ПЕПЕЛ<br><span>И ВЕРЕСК</span></h1>
+      <p class="game-subtitle">тёмная сказка о памяти</p>
+      <p class="menu-lead">Огонь угасает. Мгла забирает имена. Ты — Искра, и ты ещё помнишь, кто ты.</p>
+      <div class="menu-actions">
+        <button id="btn-continue" class="btn primary hidden">Продолжить</button>
+        <button id="btn-solo" class="btn primary">Один в тумане</button>
+        <button id="btn-host" class="btn">Создать игру</button>
+        <button id="btn-join" class="btn">Присоединиться</button>
+      </div>
+      <div class="menu-footer">
+        <button id="btn-help" class="link">Как играть</button>
+        <span class="dot">·</span>
+        <button id="btn-settings" class="link">Настройки</button>
+        <span class="dot">·</span>
+        <span class="version">глава I · v0.1</span>
+      </div>
+    </div>
+    <div class="menu-edge">WiFi · без интернета</div>
+  </section>
+
+  <!-- ВЫБОР ИМЕНИ И КЛАССА -->
+  <section id="char" class="screen hidden">
+    <div class="panel char-panel">
+      <button class="back" id="btn-char-back">← Назад</button>
+      <div class="char-head">
+        <div>
+          <div class="eyebrow" id="char-eyebrow">перед входом в туман</div>
+          <h2 id="char-title">Кто ты, Искра?</h2>
+          <p class="muted" id="char-subtitle">Имя — последнее, что у тебя есть. Выбери, каким ты войдёшь в туман.</p>
+        </div>
+        <div class="char-mark" aria-hidden="true">ᚨ</div>
+      </div>
+      <div class="char-fields">
+        <label class="field">Имя
+          <input id="char-name" maxlength="24" value="Странник" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field hidden" id="join-field">Адрес хоста
+          <input id="join-url" placeholder="ws://192.168.1.5:8080/ws" autocomplete="off" spellcheck="false">
+          <span class="field-note">Адрес показывает телефон-хост.</span>
+        </label>
+      </div>
+      <div id="class-cards" class="class-cards"></div>
+      <div class="char-start">
+        <button id="btn-start" class="btn primary">Войти в туман</button>
+        <p id="char-mode-note" class="muted small"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- HUD -->
+  <section id="hud" class="hidden">
+    <div class="hud-top">
+      <div class="player-panel">
+        <div class="class-sigil" id="hud-sigil">ᚨ</div>
+        <div class="player-bars">
+          <div class="player-name"><span id="hud-name">Искра</span><span class="level" id="hud-level">1</span></div>
+          <div class="bar hp"><div class="fill" id="hud-hp"></div><span id="hud-hp-text"></span></div>
+          <div class="bar memory"><div class="fill" id="hud-memory"></div><span id="hud-memory-text"></span></div>
+        </div>
+      </div>
+      <div class="hud-center">
+        <div class="room-chip" id="room-chip"></div>
+        <div class="boss-bar hidden" id="boss-bar">
+          <span id="boss-name">Плакальщик</span>
+          <div class="boss-track"><div id="boss-hp"></div></div>
+        </div>
+      </div>
+      <div class="hud-actions">
+        <button id="btn-pause" class="round-btn" title="Пауза" aria-label="Пауза">II</button>
+      </div>
+    </div>
+
+    <div class="quest-panel" id="quest-panel">
+      <div class="quest-title">Огонь угасает</div>
+      <div id="quest-main" class="quest-main"></div>
+      <div id="quest-side" class="quest-side"></div>
+    </div>
+
+    <div class="party" id="party"></div>
+    <div class="hint" id="hint"></div>
+
+    <div class="controls" id="controls">
+      <div class="joystick" id="joystick">
+        <div class="stick" id="stick"></div>
+      </div>
+      <div class="action-buttons">
+        <button class="action-btn ability" id="btn-ability" data-action="ability" aria-label="Способность">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l2.2 7.2L21 12l-6.8 2.8L12 22l-2.2-7.2L3 12l6.8-2.8z"/></svg>
+          <span class="label">Способность</span>
+          <span class="cost" id="ability-cost">18</span>
+          <span class="cooldown" id="ability-cd"></span>
+        </button>
+        <button class="action-btn dodge" id="btn-dodge" data-action="dodge" aria-label="Рывок">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h9l-3 4h7l-9 8 3-6H4z"/></svg>
+          <span class="label">Рывок</span>
+        </button>
+        <button class="action-btn interact" id="btn-interact" data-action="interact" aria-label="Действие">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a4 4 0 00-4 4v5.5L6.2 9.6a2 2 0 00-2.8 2.8l4.9 5.2A5 5 0 0012 21h2a6 6 0 006-6V9a2 2 0 00-4 0V5a4 4 0 00-4-4z"/></svg>
+          <span class="label">Действие</span>
+        </button>
+        <button class="action-btn attack" id="btn-attack" data-action="attack" aria-label="Удар">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 2l7 7-3 3-2.5-2.5L8 17.5 5.5 15 13.5 7 11 4.5zM3 18l3-3 3 3-3 3z"/></svg>
+          <span class="label">Удар</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="downed hidden" id="downed">
+      <div class="downed-title">Ты пал</div>
+      <div id="downed-text">Ждёшь помощи...</div>
+      <div class="downed-track"><div id="downed-bar"></div></div>
+    </div>
+  </section>
+
+  <!-- ДИАЛОГ -->
+  <section id="dialogue" class="hidden">
+    <div class="dialogue-box">
+      <div class="dialogue-speaker" id="dialogue-speaker"></div>
+      <div class="dialogue-text" id="dialogue-text"></div>
+      <div class="dialogue-choices" id="dialogue-choices"></div>
+      <div class="dialogue-hint" id="dialogue-hint">нажми, чтобы продолжить</div>
+    </div>
+  </section>
+
+  <div id="toasts" aria-live="polite"></div>
+
+  <!-- ПАУЗА -->
+  <section id="pause" class="screen overlay-screen hidden">
+    <div class="panel small-panel center-panel">
+      <div class="eyebrow">передышка</div>
+      <h2>Пауза</h2>
+      <p class="muted" id="pause-note">Даже туман иногда ждёт.</p>
+      <div class="stack">
+        <button id="btn-resume" class="btn primary">Вернуться</button>
+        <button id="btn-pause-settings" class="btn">Настройки</button>
+        <button id="btn-pause-menu" class="btn danger">В главное меню</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- НАСТРОЙКИ -->
+  <section id="settings" class="screen overlay-screen hidden">
+    <div class="panel small-panel">
+      <div class="eyebrow">настройки</div>
+      <h2>Тишина и свет</h2>
+      <label class="slider-field">Музыка <input id="set-music" type="range" min="0" max="100" value="55"><span id="set-music-val">55</span></label>
+      <label class="slider-field">Звуки <input id="set-sfx" type="range" min="0" max="100" value="75"><span id="set-sfx-val">75</span></label>
+      <label class="check-field"><input id="set-reduce" type="checkbox"> Меньше частиц и тряски</label>
+      <label class="check-field"><input id="set-hints" type="checkbox" checked> Подсказки управления</label>
+      <div class="stack">
+        <button id="btn-settings-close" class="btn primary">Готово</button>
+        <button id="btn-fullscreen" class="btn">На весь экран</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ПОМОЩЬ -->
+  <section id="help" class="screen overlay-screen hidden">
+    <div class="panel help-panel">
+      <div class="eyebrow">как играть</div>
+      <h2>Не потеряй имя</h2>
+      <div class="help-grid">
+        <div><b>Движение</b><span>WASD / стрелки или джойстик слева.</span></div>
+        <div><b>Удар</b><span>Пробел или кнопка с мечом. Авто-прицел на ближайшего врага.</span></div>
+        <div><b>Рывок</b><span>Shift или кнопка-молния. Кратковременная неуязвимость.</span></div>
+        <div><b>Способность</b><span>Q или кнопка-звезда. Тратит Память.</span></div>
+        <div><b>Действие</b><span>E или кнопка-рука. Говорить, отдыхать, открывать, поднимать.</span></div>
+        <div><b>Кооператив</b><span>Подойди к упавшему другу и держи «Действие», чтобы вернуть его.</span></div>
+      </div>
+      <p class="muted small">Способности сильны, но каждая из них стирает часть тебя. У костра Память возвращается. Пока.</p>
+      <button id="btn-help-close" class="btn primary">Понятно</button>
+    </div>
+  </section>
+
+  <!-- КОНЕЦ ГЛАВЫ -->
+  <section id="end" class="screen overlay-screen hidden">
+    <div class="panel end-panel">
+      <div class="eyebrow">конец первой главы</div>
+      <h2 id="end-title">РАССВЕТ В ДОЛГ</h2>
+      <div id="end-text" class="end-text"></div>
+      <div id="end-stats" class="end-stats"></div>
+      <div class="stack">
+        <button id="btn-end-menu" class="btn primary">В главное меню</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ПОВОРОТ ЭКРАНА -->
+  <div id="rotate" class="rotate hidden">
+    <div class="rotate-icon">⟳</div>
+    <p>Поверни телефон горизонтально</p>
+    <span>так туман ложится правильнее</span>
+  </div>
+
+  <div id="fade"></div>
+  <div id="boot" class="boot">зажигаем огонь…</div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
