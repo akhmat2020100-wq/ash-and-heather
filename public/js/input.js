@@ -9,6 +9,7 @@ const KEY_MAP = {
   ShiftLeft: "dodge", ShiftRight: "dodge",
   KeyQ: "ability",
   KeyE: "interact",
+  KeyM: "map",
 };
 
 export class Input {
@@ -18,6 +19,7 @@ export class Input {
     this.onChoice = onChoice || (() => {});
     this.keys = new Set();
     this.held = new Set();
+    this.pointerActions = new Map();
     this.joystick = { active: false, id: null, dx: 0, dy: 0, cx: 0, cy: 0 };
     this.enabled = true;
     this.joyEl = document.getElementById("joystick");
@@ -25,11 +27,28 @@ export class Input {
     this._onKeyDown = this.handleKeyDown.bind(this);
     this._onKeyUp = this.handleKeyUp.bind(this);
     this._onBlur = this.reset.bind(this);
+    this._onPointerRelease = this.releasePointer.bind(this);
     window.addEventListener("keydown", this._onKeyDown);
     window.addEventListener("keyup", this._onKeyUp);
     window.addEventListener("blur", this._onBlur);
+    window.addEventListener("pointerup", this._onPointerRelease, true);
+    window.addEventListener("pointercancel", this._onPointerRelease, true);
     this.bindJoystick();
     this.bindButtons();
+  }
+
+  releasePointer(e) {
+    const action = this.pointerActions.get(e.pointerId);
+    if (!action) return;
+    this.pointerActions.delete(e.pointerId);
+    // Другой палец может всё ещё держать ту же кнопку.
+    for (const other of this.pointerActions.values()) {
+      if (other === action) return;
+    }
+    this.held.delete(action);
+    for (const [el, a] of this.buttons || []) {
+      if (a === action) el.classList.remove("pressed");
+    }
   }
 
   handleKeyDown(e) {
@@ -134,12 +153,14 @@ export class Input {
         if (!this.enabled) return;
         e.preventDefault();
         try { el.setPointerCapture(e.pointerId); } catch {}
+        this.pointerActions.set(e.pointerId, action);
         this.held.add(action);
         el.classList.add("pressed");
         this.onAction(action);
       };
       const up = (e) => {
         e.preventDefault();
+        this.pointerActions.delete(e.pointerId);
         this.held.delete(action);
         el.classList.remove("pressed");
       };
@@ -187,6 +208,7 @@ export class Input {
 
   clearHeld() {
     this.held.clear();
+    this.pointerActions.clear();
     for (const el of this.buttons.keys()) el.classList.remove("pressed");
   }
 
@@ -200,5 +222,7 @@ export class Input {
     window.removeEventListener("keydown", this._onKeyDown);
     window.removeEventListener("keyup", this._onKeyUp);
     window.removeEventListener("blur", this._onBlur);
+    window.removeEventListener("pointerup", this._onPointerRelease, true);
+    window.removeEventListener("pointercancel", this._onPointerRelease, true);
   }
 }

@@ -169,6 +169,115 @@ check(p6.memory === mem6 + 10 || p6.memory === p6.maxMemory, "память за 
 w6.chooseDialogue(p6, 0);
 check(!p6.talking, "диалог с Ирмой закрыт");
 
+/* --- осколки и верстак --- */
+const w7 = new World({ seed: 7 });
+const p7 = w7.addPlayer("p7", "Седьмой", "hunter");
+p7.x = 20 * 32;
+p7.y = 20 * 32;
+const victim = w7.spawnEnemy("hollow", p7.x + 48, p7.y, {});
+check(!!victim, "враг для проверки осколков создан");
+if (victim) w7.damageEnemy(victim, 9999, p7);
+const shardDrop = w7.pickups.find((x) => x.type === "shard");
+check(!!shardDrop, "с врага падает осколок");
+if (shardDrop) {
+  p7.x = shardDrop.x;
+  p7.y = shardDrop.y;
+  w7.update(0.016);
+}
+check(p7.shards > 0, "осколок подбирается в валюту");
+
+p7.shards = 100;
+p7.x = 47.5 * 32;
+p7.y = 36.5 * 32;
+w7.upgradeWeapon(p7, "damage");
+check(p7.weapon.damage === 1, "прокачка урона покупается на верстаке");
+check(p7.shards === 97, "прокачка списывает осколки");
+const dmgLevel = p7.weapon.damage;
+p7.x = 10 * 32;
+p7.y = 10 * 32;
+w7.upgradeWeapon(p7, "damage");
+check(p7.weapon.damage === dmgLevel, "вдали от верстака прокачка недоступна");
+
+/* --- травы, Мила и сигнальные огни --- */
+const w8 = new World({ seed: 8 });
+const p8 = w8.addPlayer("p8", "Восьмой", "lantern");
+p8.x = 104.5 * 32;
+p8.y = 45.5 * 32;
+w8.tryInteract(p8);
+check(p8.dialogueView?.nodeId === "intro", "Мила начинает разговор");
+w8.chooseDialogue(p8, 0); // взять задание
+check(w8.quest.side.herbs === 2, "квест Милы начат");
+w8.chooseDialogue(p8, 0); // закрыть
+
+for (const [hx, hy] of [[94, 48], [113, 42], [121, 54]]) {
+  p8.x = hx * 32;
+  p8.y = hy * 32;
+  w8.tryInteract(p8);
+}
+check(w8.flags.herbs === 3, "три травы собраны");
+check(Object.values(w8.flags.herbCollected).filter(Boolean).length === 3, "травы отмечены как собранные");
+w8.tryInteract(p8); // повторно на последней траве
+check(w8.flags.herbs === 3, "собранная трава не даёт бонус повторно");
+
+p8.x = 104.5 * 32;
+p8.y = 45.5 * 32;
+w8.tryInteract(p8);
+check(p8.dialogueView?.nodeId === "reward", "Мила ждёт три травы");
+const shardsBeforeHerb = p8.shards;
+w8.chooseDialogue(p8, 0); // принять дар
+check(w8.quest.side.herbs === 3, "квест Милы завершён");
+check(p8.shards === shardsBeforeHerb + 8, "Мила платит осколками");
+
+const w9 = new World({ seed: 9 });
+const p9 = w9.addPlayer("p9", "Девятый", "lantern");
+p9.x = 27 * 32;
+p9.y = 77 * 32;
+w9.tryInteract(p9);
+check(w9.flags.beacons === 1, "сигнальный огонь зажжён");
+check(w9.flags.beaconsLit.mill === true, "огонь у мельницы отмечен");
+w9.tryInteract(p9);
+check(w9.flags.beacons === 1, "один и тот же огонь не считается дважды");
+
+/* --- третий путь --- */
+const w10 = new World({ seed: 10 });
+const p10 = w10.addPlayer("p10", "Десятый", "lantern");
+p10.x = 100.5 * 32;
+p10.y = 16.5 * 32;
+w10.tryInteract(p10);
+check(p10.dialogueView?.nodeId === "intro", "Отшельник Каль говорит");
+w10.chooseDialogue(p10, 0); // узнать правду
+check(w10.flags.truthKnown === true, "правда об огне узнана");
+check(w10.quest.side.truth === 2, "третий путь открыт");
+w10.chooseDialogue(p10, 0); // truth -> truth2
+w10.chooseDialogue(p10, 0); // закрыть
+check(!p10.talking, "диалог с Калем закрыт");
+
+w10.flags.hasHeart = true;
+w10.flags.bossDead = true;
+w10.quest.main.stage = 5;
+p10.x = 43.5 * 32;
+p10.y = 36.3 * 32;
+w10.tryInteract(p10);
+check(p10.dialogueView?.nodeId === "afterBoss", "Ирма предлагает третий путь");
+w10.chooseDialogue(p10, 2);
+check(p10.dialogueView?.nodeId === "endingTruth", "финал правды доступен");
+check(w10.flags.pendingEnding === "truth", "финал правды ожидает подтверждения");
+w10.chooseDialogue(p10, 0);
+check(w10.flags.ending === "truth", "финал правды записан");
+check(w10.quest.main.stage === 6, "третий финал завершает главу");
+
+const w11 = new World({ seed: 11 });
+const p11 = w11.addPlayer("p11", "Одиннадцатый", "lantern");
+w11.flags.hasHeart = true;
+w11.flags.bossDead = true;
+w11.quest.main.stage = 5;
+p11.x = 43.5 * 32;
+p11.y = 36.3 * 32;
+w11.tryInteract(p11);
+w11.chooseDialogue(p11, 2);
+check(p11.dialogueView?.nodeId === "noTruth", "без правды третий путь закрыт");
+check(!w11.flags.pendingEnding, "без правды финал не записывается");
+
 /* --- сохранение --- */
 const saved = w3.serialize(p3.id);
 check(!!saved && saved.version === 1, "состояние сериализуется");
@@ -178,6 +287,19 @@ const p4 = w4.players.get("host");
 check(!!p4 && p4.name === p3.name, "восстановлен игрок");
 check(w4.flags.merchantTrade === true, "восстановлены флаги");
 check(w4.flags.emberKinds.memory === true, "восстановлены угольки");
+
+const saved8 = w8.serialize(p8.id);
+const w12 = new World({ seed: saved8.seed });
+check(w12.restoreSave(saved8, "host"), "сохранение с травами восстанавливается");
+check(w12.flags.herbCollected.herb_94_48 === true, "восстановлены собранные травы");
+check(w12.flags.herbs === 3, "восстановлен счётчик трав");
+
+const saved7 = w7.serialize(p7.id);
+const w13 = new World({ seed: saved7.seed });
+check(w13.restoreSave(saved7, "host"), "сохранение с осколками восстанавливается");
+const p13 = w13.players.get("host");
+check(p13?.shards === 97, "восстановлены осколки");
+check(p13?.weapon?.damage === 1, "восстановлена прокачка оружия");
 
 if (failed) {
   console.error(`\n${failed} проверок не прошло`);

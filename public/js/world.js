@@ -1,6 +1,6 @@
 /* Пепел и Вереск — симуляция мира (общая для соло и хоста) */
 import { createMap, TILE } from "./map.js";
-import { CLASSES, ENEMY_TYPES, DIALOGUES, NPCS, QUEST_MAIN, SIDE_QUESTS } from "./data.js";
+import { CLASSES, ENEMY_TYPES, DIALOGUES, NPCS, QUEST_MAIN, SIDE_QUESTS, WEAPON_UPGRADES } from "./data.js";
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
@@ -49,10 +49,18 @@ export class World {
       pendingEnding: null,
       ending: null,
       lastRest: 0,
+      herbs: 0,
+      beacons: 0,
+      barrows: 0,
+      truthKnown: false,
+      merchantRefused: false,
+      millStory: false,
+      herbCollected: {},
+      beaconsLit: {},
     };
     this.quest = {
       main: { stage: 0 },
-      side: { hunter: 1, name: 1, merchant: 1 },
+      side: { hunter: 1, name: 1, merchant: 1, herbs: 1, beacons: 1, barrows: 1, truth: 1 },
     };
     this.spawnMapEnemies();
   }
@@ -167,6 +175,8 @@ export class World {
       xp: 0,
       kills: 0,
       bonusDamage: 0,
+      shards: 0,
+      weapon: { damage: 0, speed: 0, aim: 0, resonance: 0 },
       reviveTargetId: null,
       reviveTimer: 0,
       reviveDuration: 1.5,
@@ -252,6 +262,10 @@ export class World {
     }
     if (p.downed) return;
     if (p.talking) return;
+    if (action === "upgrade") {
+      this.upgradeWeapon(p, data.key);
+      return;
+    }
     if (action === "interact") {
       if (p.channeling) {
         this.cancelRevive(p);
@@ -593,19 +607,21 @@ export class World {
   tryAttack(p) {
     if (p.cooldown > 0 || p.downed || p.talking || p.channeling) return;
     const def = CLASSES[p.cls];
-    const target = this.nearestEnemy(p.x, p.y, def.ranged ? 380 : 210);
+    const w = p.weapon || {};
+    const aimMul = 1 + 0.1 * (w.aim || 0);
+    const target = this.nearestEnemy(p.x, p.y, (def.ranged ? 380 : 210) * aimMul);
     if (target) p.facing = angleTo(p.x, p.y, target.x, target.y);
-    p.cooldown = def.cooldown;
+    p.cooldown = def.cooldown * Math.max(0.6, 1 - 0.08 * (w.speed || 0));
     p.attackAnim = 0.22;
-    const dmg = def.damage + (p.level - 1) * 2 + p.bonusDamage;
+    const dmg = Math.round(def.damage * (1 + 0.12 * (w.damage || 0))) + (p.level - 1) * 2 + p.bonusDamage;
 
     if (def.ranged) {
       const a = p.facing;
       this.spawnProjectile({
         x: p.x + Math.cos(a) * 16,
         y: p.y + Math.sin(a) * 16,
-        vx: Math.cos(a) * def.projectileSpeed,
-        vy: Math.sin(a) * def.projectileSpeed,
+        vx: Math.cos(a) * def.projectileSpeed * aimMul,
+        vy: Math.sin(a) * def.projectileSpeed * aimMul,
         damage: dmg,
         team: "player",
         owner: p.id,
@@ -639,8 +655,10 @@ export class World {
       this.emit("memoryFail", { id: p.id, text: "Слишком мало Памяти." });
       return;
     }
+    const w = p.weapon || {};
+    const abilityMul = 1 + 0.08 * (w.resonance || 0);
     p.memory = Math.max(0, p.memory - ab.cost);
-    p.abilityCd = ab.cd;
+    p.abilityCd = ab.cd * Math.max(0.64, 1 - 0.06 * (w.resonance || 0));
     const target = this.nearestEnemy(p.x, p.y, ab.radius + 180);
     if (target) p.facing = angleTo(p.x, p.y, target.x, target.y);
 
@@ -649,7 +667,7 @@ export class World {
       for (const e of this.enemies) {
         if (e.hp <= 0) continue;
         if (dist(p.x, p.y, e.x, e.y) <= ab.radius + e.radius) {
-          this.damageEnemy(e, ab.damage + (p.level - 1) * 2, p);
+          this.damageEnemy(e, Math.round(ab.damage * abilityMul) + (p.level - 1) * 2, p);
           e.stunTimer = Math.max(e.stunTimer, ab.stun);
           hit++;
         }
@@ -661,7 +679,7 @@ export class World {
         y: p.y + Math.sin(p.facing) * 16,
         vx: Math.cos(p.facing) * ab.speed,
         vy: Math.sin(p.facing) * ab.speed,
-        damage: ab.damage + (p.level - 1) * 2,
+        damage: Math.round(ab.damage * abilityMul) + (p.level - 1) * 2,
         team: "player",
         owner: p.id,
         type: "pierce",
@@ -680,7 +698,7 @@ export class World {
         if (d > ab.radius + e.radius) continue;
         const a = angleTo(p.x, p.y, e.x, e.y);
         if (Math.abs(angleDiff(a, p.facing)) > ab.angle / 2) continue;
-        this.damageEnemy(e, ab.damage + (p.level - 1) * 2, p);
+        this.damageEnemy(e, Math.round(ab.damage * abilityMul) + (p.level - 1) * 2, p);
         e.bleed = Math.max(e.bleed, ab.bleed);
         hit++;
       }
@@ -736,6 +754,7 @@ export class World {
     }
     for (const prop of this.map.props) {
       if (!prop.interact) continue;
+      if (prop.interact.kind === "herb" && this.flags.herbCollected[prop.id]) continue;
       const d = dist(p.x, p.y, prop.x, prop.y);
       if (d < bestDist + (prop.r || 8) * 0.35) {
         bestDist = d;
@@ -755,6 +774,35 @@ export class World {
     const inter = prop.interact;
     if (inter.kind === "campfire") {
       this.rest(p);
+    } else if (inter.kind === "workbench") {
+      this.emit("workbench", { id: p.id });
+    } else if (inter.kind === "herb") {
+      if (!this.flags.herbCollected[prop.id]) {
+        this.flags.herbCollected[prop.id] = true;
+        this.flags.herbs = Math.min(3, (this.flags.herbs || 0) + 1);
+        this.emit("herb", { id: p.id, x: prop.x, y: prop.y, count: this.flags.herbs });
+        this.emit("toast", { text: `Трава собрана. ${this.flags.herbs}/3.` });
+        if (this.flags.herbs >= 3) {
+          if (this.quest.side.herbs < 3) this.quest.side.herbs = Math.max(this.quest.side.herbs, 2);
+          this.emit("quest", {});
+          this.emit("toast", { text: "Все три травы у тебя. Мила ждёт в Соляной топи." });
+        }
+      }
+    } else if (inter.kind === "beacon") {
+      const key = prop.id.replace(/^beacon_/, "");
+      if (!this.flags.beaconsLit[key]) {
+        this.flags.beaconsLit[key] = true;
+        this.flags.beacons = Math.min(3, (this.flags.beacons || 0) + 1);
+        this.emit("beacon", { id: p.id, x: prop.x, y: prop.y, count: this.flags.beacons, key });
+        this.emit("toast", { text: `Сигнальный огонь горит. ${this.flags.beacons}/3.` });
+        if (this.flags.beacons >= 3) {
+          if (this.quest.side.beacons < 3) this.quest.side.beacons = Math.max(this.quest.side.beacons, 2);
+          this.emit("quest", {});
+          this.emit("toast", { text: "Три дыма поднялись над Морном. Гарм ждёт у перевоза." });
+        }
+      } else {
+        this.emit("toast", { text: "Этот огонь уже горит." });
+      }
     } else if (inter.kind === "dialogue") {
       let node = "intro";
       if (inter.script === "nameTree" && this.flags.nameChoice) node = "done";
@@ -794,6 +842,24 @@ export class World {
     }
     if (npc.dialogue === "merchant") {
       return this.flags.merchantTrade ? "done" : "intro";
+    }
+    if (npc.dialogue === "mila") {
+      if (this.quest.side.herbs >= 3) return "done";
+      if (this.flags.herbs >= 3) return "reward";
+      return this.quest.side.herbs >= 2 ? "wait" : "intro";
+    }
+    if (npc.dialogue === "garm") {
+      if (this.quest.side.beacons >= 3) return "done";
+      if (this.flags.beacons >= 3) return "reward";
+      return this.quest.side.beacons >= 2 ? "wait" : "intro";
+    }
+    if (npc.dialogue === "ada") {
+      if (this.quest.side.barrows >= 3) return "done";
+      if (this.flags.barrows >= 3) return "reward";
+      return this.quest.side.barrows >= 2 ? "wait" : "intro";
+    }
+    if (npc.dialogue === "hermit") {
+      return this.flags.truthKnown ? "done" : "intro";
     }
     return "intro";
   }
@@ -910,6 +976,91 @@ export class World {
         this.flags.merchantTrade = true;
         this.quest.side.merchant = 2;
         this.emit("toast", { text: "Соляной оберег согревает грудь. Максимум здоровья +15." });
+        return null;
+      }
+      case "acceptHerbs": {
+        if (this.quest.side.herbs === 1) {
+          this.quest.side.herbs = 2;
+          this.emit("quest", {});
+          this.emit("toast", { text: "Мила просит три травы. Они растут у чёрной воды." });
+        }
+        return null;
+      }
+      case "herbReward": {
+        if (this.flags.herbs >= 3 && this.quest.side.herbs < 3) {
+          this.quest.side.herbs = 3;
+          p.shards += 8;
+          p.maxHp += 12;
+          p.hp = Math.min(p.maxHp, p.hp + 12);
+          p.memory = Math.min(p.maxMemory, p.memory + 20);
+          this.emit("shards", { id: p.id, x: p.x, y: p.y - 20, amount: 8 });
+          this.emit("quest", {});
+          this.emit("toast", { text: "Соль Милы. Максимум здоровья +12, осколки +8." });
+        }
+        return null;
+      }
+      case "acceptBeacons": {
+        if (this.quest.side.beacons === 1) {
+          this.quest.side.beacons = 2;
+          this.emit("quest", {});
+          this.emit("toast", { text: "Гарм просит зажечь три сигнальных огня." });
+        }
+        return null;
+      }
+      case "beaconReward": {
+        if (this.flags.beacons >= 3 && this.quest.side.beacons < 3) {
+          this.quest.side.beacons = 3;
+          p.shards += 12;
+          p.maxMemory += 8;
+          p.memory = Math.min(p.maxMemory, p.memory + 16);
+          this.emit("shards", { id: p.id, x: p.x, y: p.y - 20, amount: 12 });
+          this.emit("quest", {});
+          this.emit("toast", { text: "Плата Гарма. Максимум памяти +8, осколки +12." });
+        }
+        return null;
+      }
+      case "acceptBarrows": {
+        if (this.quest.side.barrows === 1) {
+          this.quest.side.barrows = 2;
+          this.emit("quest", {});
+          this.emit("toast", { text: "Ада просит уложить трёх курганных." });
+        }
+        return null;
+      }
+      case "barrowReward": {
+        if (this.flags.barrows >= 3 && this.quest.side.barrows < 3) {
+          this.quest.side.barrows = 3;
+          p.shards += 10;
+          p.maxHp += 10;
+          p.hp = Math.min(p.maxHp, p.hp + 10);
+          this.emit("shards", { id: p.id, x: p.x, y: p.y - 20, amount: 10 });
+          this.emit("quest", {});
+          this.emit("toast", { text: "Дар Ады. Максимум здоровья +10, осколки +10." });
+        }
+        return null;
+      }
+      case "learnTruth": {
+        if (!this.flags.truthKnown) {
+          this.flags.truthKnown = true;
+          this.quest.side.truth = 2;
+          p.maxMemory += 10;
+          p.memory = Math.min(p.maxMemory, p.memory + 20);
+          this.emit("quest", {});
+          this.emit("toast", { text: "Ты узнал, из чего слеплен огонь. Третий путь открыт." });
+        }
+        return null;
+      }
+      case "millStory": {
+        if (!this.flags.millStory) {
+          this.flags.millStory = true;
+          p.memory = Math.min(p.maxMemory, p.memory + 8);
+          this.emit("toast", { text: "Жернова помнят имена. Память +8." });
+        }
+        return null;
+      }
+      case "endingTruth": {
+        if (!this.flags.truthKnown) return "noTruth";
+        this.flags.pendingEnding = "truth";
         return null;
       }
       case "openChapel": {
@@ -1043,10 +1194,20 @@ export class World {
       player.kills++;
       const def = ENEMY_TYPES[e.type];
       this.addXp(player, def?.xp || 5);
+      const shardAmount = e.boss ? 24 : e.elite ? 5 : 1 + (Math.random() < 0.35 ? 1 : 0);
+      this.spawnPickup("shard", e.x + (Math.random() - 0.5) * 12, e.y + (Math.random() - 0.5) * 10, { value: shardAmount });
       if (Math.random() < (def?.memoryDrop || 0.08)) {
         this.spawnPickup("memory", e.x, e.y);
       } else if (Math.random() < 0.12) {
         this.spawnPickup("health", e.x, e.y);
+      }
+    }
+    if (e.type === "barrow" && player) {
+      this.flags.barrows = Math.min(3, (this.flags.barrows || 0) + 1);
+      if (this.flags.barrows >= 3 && this.quest.side.barrows < 3) {
+        this.quest.side.barrows = 2;
+        this.emit("quest", {});
+        this.emit("toast", { text: "Три курганных вернулись в землю. Ада ждёт." });
       }
     }
     if (e.type === "guardian") {
@@ -1166,6 +1327,7 @@ export class World {
       y,
       ttl: opts.ttl ?? (type === "heart" || type === "ember" ? 0 : 18),
       kind: opts.kind || null,
+      value: opts.value || 0,
       born: this.time,
     };
     this.pickups.push(pickup);
@@ -1198,6 +1360,10 @@ export class World {
     } else if (pick.type === "memory") {
       p.memory = Math.min(p.maxMemory, p.memory + 18);
       this.emit("toast", { text: "Обрывок памяти. Память +18." });
+    } else if (pick.type === "shard") {
+      const amount = pick.value || 1;
+      p.shards = (p.shards || 0) + amount;
+      this.emit("shards", { id: p.id, x: pick.x, y: pick.y - 10, amount });
     } else if (pick.type === "ember") {
       this.addEmber(pick.kind || "peace", p);
       this.emit("toast", { text: "Уголёк Покоя найден." });
@@ -1255,6 +1421,35 @@ export class World {
     return this.players.get(id);
   }
 
+  nearWorkbench(p) {
+    const bench = this.map.props.find((prop) => prop.id === "workbench");
+    return !!bench && dist(p.x, p.y, bench.x, bench.y) < 96;
+  }
+
+  upgradeWeapon(p, key) {
+    const def = WEAPON_UPGRADES[key];
+    if (!def) return;
+    if (!this.nearWorkbench(p)) {
+      this.emit("toast", { text: "Для прокачки нужен верстак у последнего очага." });
+      return;
+    }
+    if (!p.weapon) p.weapon = { damage: 0, speed: 0, aim: 0, resonance: 0 };
+    const level = p.weapon[key] || 0;
+    if (level >= def.max) {
+      this.emit("toast", { text: `${def.name}: уже предел.` });
+      return;
+    }
+    const cost = def.costs[level];
+    if ((p.shards || 0) < cost) {
+      this.emit("toast", { text: `Нужно осколков: ${cost}. Сейчас ${p.shards || 0}.` });
+      return;
+    }
+    p.shards -= cost;
+    p.weapon[key] = level + 1;
+    this.emit("upgrade", { id: p.id, key, level: level + 1, cost, name: def.name });
+    this.emit("toast", { text: `${def.name} · уровень ${level + 1}. Осколков −${cost}.` });
+  }
+
   questText() {
     const stage = this.quest.main.stage;
     const main = QUEST_MAIN.stages[stage] || "";
@@ -1262,6 +1457,10 @@ export class World {
     if (this.quest.side.hunter < 3) side.push(SIDE_QUESTS.hunter.stages[this.quest.side.hunter]);
     if (this.quest.side.name < 3) side.push(SIDE_QUESTS.name.stages[this.quest.side.name]);
     if (this.quest.side.merchant < 2) side.push(SIDE_QUESTS.merchant.stages[this.quest.side.merchant]);
+    if ((this.quest.side.herbs || 1) < 3) side.push(SIDE_QUESTS.herbs.stages[this.quest.side.herbs || 1]);
+    if ((this.quest.side.beacons || 1) < 3) side.push(SIDE_QUESTS.beacons.stages[this.quest.side.beacons || 1]);
+    if ((this.quest.side.barrows || 1) < 3) side.push(SIDE_QUESTS.barrows.stages[this.quest.side.barrows || 1]);
+    if ((this.quest.side.truth || 1) < 2) side.push(SIDE_QUESTS.truth.stages[this.quest.side.truth || 1]);
     return { main, side };
   }
 
@@ -1286,6 +1485,8 @@ export class World {
         level: p.level,
         xp: p.xp,
         kills: p.kills,
+        shards: p.shards || 0,
+        weapon: { ...(p.weapon || { damage: 0, speed: 0, aim: 0, resonance: 0 }) },
         reviveTargetId: p.reviveTargetId,
         reviveProgress: p.channeling ? Math.round((p.reviveTimer / p.reviveDuration) * 100) / 100 : 0,
         channeling: p.channeling,
@@ -1330,9 +1531,14 @@ export class World {
         type: p.type,
         radius: p.radius,
       })),
-      pickups: this.pickups.map((p) => ({ id: p.id, type: p.type, x: p.x, y: p.y })),
+      pickups: this.pickups.map((p) => ({ id: p.id, type: p.type, x: p.x, y: p.y, value: p.value || 0, kind: p.kind || null })),
       npcs: this.npcs.map((n) => ({ id: n.id, name: n.name, x: n.x, y: n.y, color: n.color, cloak: n.cloak, alive: n.alive })),
-      flags: { ...this.flags, emberKinds: { ...this.flags.emberKinds } },
+      flags: {
+        ...this.flags,
+        emberKinds: { ...this.flags.emberKinds },
+        herbCollected: { ...this.flags.herbCollected },
+        beaconsLit: { ...this.flags.beaconsLit },
+      },
       quest: { main: { ...this.quest.main }, side: { ...this.quest.side } },
       events: this.events.map((e) => ({ ...e })),
       boss: this.enemies.find((e) => e.boss && e.active)
@@ -1351,7 +1557,12 @@ export class World {
       version: 1,
       seed: this.seed,
       time: this.time,
-      flags: { ...this.flags, emberKinds: { ...this.flags.emberKinds } },
+      flags: {
+        ...this.flags,
+        emberKinds: { ...this.flags.emberKinds },
+        herbCollected: { ...this.flags.herbCollected },
+        beaconsLit: { ...this.flags.beaconsLit },
+      },
       quest: { main: { ...this.quest.main }, side: { ...this.quest.side } },
       player: {
         id: p.id,
@@ -1367,6 +1578,8 @@ export class World {
         xp: p.xp,
         kills: p.kills,
         bonusDamage: p.bonusDamage,
+        shards: p.shards || 0,
+        weapon: { ...(p.weapon || { damage: 0, speed: 0, aim: 0, resonance: 0 }) },
       },
       savedAt: Date.now(),
     };
@@ -1374,7 +1587,13 @@ export class World {
 
   restoreSave(data, playerId = "host") {
     if (!data || data.version !== 1) return false;
-    this.flags = { ...this.flags, ...data.flags, emberKinds: { ...this.flags.emberKinds, ...(data.flags?.emberKinds || {}) } };
+    this.flags = {
+      ...this.flags,
+      ...data.flags,
+      emberKinds: { ...this.flags.emberKinds, ...(data.flags?.emberKinds || {}) },
+      herbCollected: { ...this.flags.herbCollected, ...(data.flags?.herbCollected || {}) },
+      beaconsLit: { ...this.flags.beaconsLit, ...(data.flags?.beaconsLit || {}) },
+    };
     this.quest = { main: { ...this.quest.main, ...(data.quest?.main || {}) }, side: { ...this.quest.side, ...(data.quest?.side || {}) } };
     this.map.setChapelOpen(!!this.flags.chapelOpen);
     if (this.flags.bossDead) {
@@ -1400,6 +1619,8 @@ export class World {
       p.xp = s.xp || 0;
       p.kills = s.kills || 0;
       p.bonusDamage = s.bonusDamage || 0;
+      p.shards = s.shards || 0;
+      p.weapon = { damage: 0, speed: 0, aim: 0, resonance: 0, ...(s.weapon || {}) };
       p.maxHp = s.maxHp || p.maxHp;
       p.maxMemory = s.maxMemory || p.maxMemory;
     }

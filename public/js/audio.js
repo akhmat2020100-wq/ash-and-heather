@@ -12,6 +12,8 @@ export class AudioEngine {
     this.unlocked = false;
     this.bellTimer = 12;
     this.started = false;
+    this.lastShotAt = -1;
+    this.voices = 0;
   }
 
   unlock() {
@@ -131,7 +133,8 @@ export class AudioEngine {
   }
 
   tone({ freq = 220, to = null, type = "sine", dur = 0.3, gain = 0.15, delay = 0, attack = 0.005, dest = null }) {
-    if (!this.unlocked) return;
+    if (!this.unlocked || this.voices > 32) return;
+    this.voices++;
     const ctx = this.ctx;
     const t = ctx.currentTime + delay;
     const o = ctx.createOscillator();
@@ -144,12 +147,14 @@ export class AudioEngine {
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
     o.connect(g);
     g.connect(dest || this.sfxGain);
+    o.onended = () => { this.voices = Math.max(0, this.voices - 1); };
     o.start(t);
     o.stop(t + dur + 0.05);
   }
 
   noise({ dur = 0.2, gain = 0.15, freq = 900, q = 1, type = "bandpass", delay = 0, sweepTo = null }) {
-    if (!this.unlocked) return;
+    if (!this.unlocked || this.voices > 32) return;
+    this.voices++;
     const ctx = this.ctx;
     const t = ctx.currentTime + delay;
     const src = ctx.createBufferSource();
@@ -167,6 +172,7 @@ export class AudioEngine {
     src.connect(f);
     f.connect(g);
     g.connect(this.sfxGain);
+    src.onended = () => { this.voices = Math.max(0, this.voices - 1); };
     src.start(t);
     src.stop(t + dur + 0.05);
   }
@@ -190,6 +196,11 @@ export class AudioEngine {
 
   play(name, opts = {}) {
     if (!this.unlocked) return;
+    if (name === "shoot") {
+      const now = this.ctx?.currentTime || 0;
+      if (now - this.lastShotAt < 0.055) return;
+      this.lastShotAt = now;
+    }
     switch (name) {
       case "ui":
         this.tone({ freq: 520, to: 430, type: "triangle", dur: 0.1, gain: 0.06 });
@@ -246,6 +257,30 @@ export class AudioEngine {
         break;
       case "pickup":
         this.tone({ freq: 660, to: 880, type: "triangle", dur: 0.16, gain: 0.07 });
+        break;
+      case "shard":
+        this.tone({ freq: 1180, to: 1560, type: "triangle", dur: 0.12, gain: 0.035 });
+        this.tone({ freq: 790, to: 1040, type: "sine", dur: 0.17, gain: 0.03, delay: 0.02 });
+        break;
+      case "upgrade":
+        this.tone({ freq: 330, to: 660, type: "sine", dur: 0.45, gain: 0.07 });
+        this.tone({ freq: 495, to: 990, type: "sine", dur: 0.5, gain: 0.04, delay: 0.06 });
+        this.noise({ dur: 0.18, gain: 0.04, freq: 1800, q: 1.6 });
+        break;
+      case "marker":
+        this.tone({ freq: 880, to: 1320, type: "triangle", dur: 0.14, gain: 0.045 });
+        break;
+      case "map":
+        this.tone({ freq: 420, to: 280, type: "triangle", dur: 0.14, gain: 0.05 });
+        break;
+      case "herb":
+        this.noise({ dur: 0.12, gain: 0.04, freq: 2600, q: 1.2 });
+        this.tone({ freq: 660, to: 990, type: "sine", dur: 0.18, gain: 0.04 });
+        break;
+      case "beacon":
+        this.tone({ freq: 196, to: 392, type: "sine", dur: 0.8, gain: 0.08 });
+        this.tone({ freq: 392, to: 784, type: "sine", dur: 0.9, gain: 0.04, delay: 0.08 });
+        this.noise({ dur: 0.5, gain: 0.05, freq: 700, q: 0.9, sweepTo: 1400 });
         break;
       case "levelUp":
         for (let i = 0; i < 3; i++) {

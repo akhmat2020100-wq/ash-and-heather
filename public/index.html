@@ -33,7 +33,7 @@
         <span class="dot">·</span>
         <button id="btn-settings" class="link">Настройки</button>
         <span class="dot">·</span>
-        <span class="version">глава I · v0.1</span>
+        <span class="version">глава I · v0.2</span>
       </div>
     </div>
     <div class="menu-edge">WiFi · без интернета</div>
@@ -77,6 +77,7 @@
           <div class="player-name"><span id="hud-name">Искра</span><span class="level" id="hud-level">1</span></div>
           <div class="bar hp"><div class="fill" id="hud-hp"></div><span id="hud-hp-text"></span></div>
           <div class="bar memory"><div class="fill" id="hud-memory"></div><span id="hud-memory-text"></span></div>
+          <div class="shard-pill" title="Осколки для верстака"><span class="shard-glyph">◆</span><span id="hud-shards">0</span></div>
         </div>
       </div>
       <div class="hud-center">
@@ -87,8 +88,14 @@
         </div>
       </div>
       <div class="hud-actions">
+        <button id="btn-map" class="round-btn" title="Карта и метки (M)" aria-label="Карта">M</button>
         <button id="btn-pause" class="round-btn" title="Пауза" aria-label="Пауза">II</button>
       </div>
+    </div>
+
+    <div class="minimap" id="minimap" role="button" tabindex="0" title="Открыть карту (M)">
+      <canvas id="minimap-canvas" width="288" height="208" aria-label="Мини-карта"></canvas>
+      <span class="minimap-cap">M · карта</span>
     </div>
 
     <div class="quest-panel" id="quest-panel">
@@ -186,10 +193,66 @@
         <div><b>Рывок</b><span>Shift или кнопка-молния. Кратковременная неуязвимость.</span></div>
         <div><b>Способность</b><span>Q или кнопка-звезда. Тратит Память.</span></div>
         <div><b>Действие</b><span>E или кнопка-рука. Говорить, отдыхать, открывать, поднимать.</span></div>
+        <div><b>Карта</b><span>M или кнопка в углу. На большой карте ставь метки цели, опасности, добычи и дома.</span></div>
+        <div><b>Осколки</b><span>Падают с врагов. На верстаке у последнего очага покупай улучшения оружия.</span></div>
         <div><b>Кооператив</b><span>Подойди к упавшему другу и держи «Действие», чтобы вернуть его.</span></div>
       </div>
-      <p class="muted small">Способности сильны, но каждая из них стирает часть тебя. У костра Память возвращается. Пока.</p>
+      <p class="muted small">Способности сильны, но каждая из них стирает часть тебя. У костра Память возвращается. Пока. Мир открыт: сюжетную тропу можно оставить и уйти к Соляной топи, курганам, старой мельнице или Тихой Звезде.</p>
       <button id="btn-help-close" class="btn primary">Понятно</button>
+    </div>
+  </section>
+
+  <!-- КАРТА -->
+  <section id="map-screen" class="screen overlay-screen hidden">
+    <div class="panel map-panel">
+      <div class="map-head">
+        <div>
+          <div class="eyebrow">карта морна</div>
+          <h2>Туман и дороги</h2>
+        </div>
+        <button id="btn-map-close" class="round-btn" title="Закрыть карту" aria-label="Закрыть карту">×</button>
+      </div>
+      <div class="map-layout">
+        <div class="map-stage">
+          <canvas id="map-canvas" width="576" height="416" aria-label="Большая карта"></canvas>
+          <div class="map-legend">
+            <span><i style="--lg:#fff4d8"></i>ты</span>
+            <span><i style="--lg:#c9b27a"></i>люди</span>
+            <span><i style="--lg:#c85a50"></i>враги</span>
+            <span><i style="--lg:#e8a54b"></i>места</span>
+          </div>
+        </div>
+        <aside class="map-side">
+          <div class="map-side-title">Метки</div>
+          <div class="map-palette" id="map-palette">
+            <button type="button" id="btn-marker-goal" class="marker-chip selected" data-marker="goal">Цель</button>
+            <button type="button" id="btn-marker-danger" class="marker-chip" data-marker="danger">Опасность</button>
+            <button type="button" id="btn-marker-loot" class="marker-chip" data-marker="loot">Добыча</button>
+            <button type="button" id="btn-marker-home" class="marker-chip" data-marker="home">Дом</button>
+          </div>
+          <p class="muted small">Выбери тип метки и коснись карты. Метки видны в мире сквозь туман и сохраняются для этого мира.</p>
+          <div class="map-list-head"><span>Поставлено</span><span id="map-marker-count">0/24</span></div>
+          <div id="map-marker-list" class="map-marker-list"></div>
+          <button id="btn-map-clear" class="btn danger">Убрать все метки</button>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- ВЕРСТАК -->
+  <section id="workbench" class="screen overlay-screen hidden">
+    <div class="panel workbench-panel">
+      <div class="workbench-head">
+        <div>
+          <div class="eyebrow">верстак у последнего очага</div>
+          <h2>Сталь и память</h2>
+        </div>
+        <button id="btn-workbench-close" class="round-btn" title="Закрыть верстак" aria-label="Закрыть верстак">×</button>
+      </div>
+      <div class="workbench-shards">Осколков: <b id="workbench-shards">0</b></div>
+      <div id="workbench-list" class="workbench-list"></div>
+      <p class="muted small">Осколки падают с побеждённых врагов. Прокачка оружия действует на удар, выстрел и способность.</p>
+      <button id="btn-workbench-done" class="btn primary">Готово</button>
     </div>
   </section>
 

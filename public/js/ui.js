@@ -1,7 +1,29 @@
 /* Пепел и Вереск — DOM-интерфейс */
-import { CLASSES, QUEST_MAIN, SIDE_QUESTS, ENDINGS } from "./data.js";
+import { CLASSES, QUEST_MAIN, SIDE_QUESTS, ENDINGS, WEAPON_UPGRADES } from "./data.js";
+import { T, TILE, MAP_W, MAP_H } from "./map.js";
 
 const SIGILS = { lantern: "ᛟ", hunter: "ᚱ", executioner: "ᚦ" };
+
+const MARKER_TYPES = {
+  goal: { label: "Цель", color: "#ffd166" },
+  danger: { label: "Опасность", color: "#ff7d6e" },
+  loot: { label: "Добыча", color: "#9fe0a8" },
+  home: { label: "Дом", color: "#8fc4ff" },
+};
+
+const MAP_TILE_COLORS = {
+  [T.HEATHER]: "#2f3a33",
+  [T.DIRT]: "#463b30",
+  [T.STONE]: "#484b50",
+  [T.WATER]: "#1f3441",
+  [T.WALL]: "#3b342f",
+  [T.TREE]: "#243028",
+  [T.ROCK]: "#3b3938",
+  [T.FLOOR]: "#3d3a42",
+  [T.ASH]: "#3b3734",
+  [T.BRIDGE]: "#54412d",
+  [T.MOSS]: "#35472f",
+};
 const $ = (id) => document.getElementById(id);
 
 export class UI {
@@ -20,6 +42,19 @@ export class UI {
     this.partySig = "";
     this.abilitySig = "";
     this.lastClass = "lantern";
+    this.mapOpen = false;
+    this.workbenchOpen = false;
+    this.mapScene = null;
+    this.mapTiles = null;
+    this.mapMarkers = [];
+    this.markerType = "goal";
+    this.mapDrawAt = 0;
+    this.workbenchSig = "";
+    this.onMap = () => {};
+    this.onMarkerAdd = () => {};
+    this.onMarkerRemove = () => {};
+    this.onMarkersClear = () => {};
+    this.onUpgrade = () => {};
 
     this.el = {
       menu: $("menu"), char: $("char"), hud: $("hud"), pause: $("pause"),
@@ -43,11 +78,24 @@ export class UI {
       setSfx: $("set-sfx"), setSfxVal: $("set-sfx-val"),
       setReduce: $("set-reduce"), setHints: $("set-hints"),
       controls: $("controls"),
+      shards: $("hud-shards"),
+      minimap: $("minimap"),
+      minimapCanvas: $("minimap-canvas"),
+      mapScreen: $("map-screen"),
+      mapCanvas: $("map-canvas"),
+      mapMarkerList: $("map-marker-list"),
+      mapMarkerCount: $("map-marker-count"),
+      mapPalette: $("map-palette"),
+      workbench: $("workbench"),
+      workbenchShards: $("workbench-shards"),
+      workbenchList: $("workbench-list"),
     };
 
     this.bindMenu();
     this.bindSettings();
     this.bindDialogueBox();
+    this.bindMap();
+    this.bindWorkbench();
     this.buildClassCards();
     this.applySettings({ music: 55, sfx: 75, reduce: false, hints: true });
   }
@@ -97,6 +145,320 @@ export class UI {
       if (e.key === "Enter") this.onCharStart(this.getCharConfig());
     });
   }
+
+  /* ---------- карта и метки ---------- */
+  bindMap() {
+    if (this.el.minimapCanvas) {
+      this.el.minimapCanvas.width = MAP_W * 2;
+      this.el.minimapCanvas.height = MAP_H * 2;
+    }
+    if (this.el.mapCanvas) {
+      this.el.mapCanvas.width = MAP_W * 4;
+      this.el.mapCanvas.height = MAP_H * 4;
+    }
+    $("btn-map")?.addEventListener("click", () => {
+      this.sound("ui");
+      this.onMap();
+    });
+    this.el.minimap?.addEventListener("click", () => {
+      this.sound("ui");
+      this.onMap();
+    });
+    $("btn-map-close")?.addEventListener("click", () => {
+      this.sound("ui");
+      this.closeMap();
+    });
+    $("btn-map-clear")?.addEventListener("click", () => {
+      this.sound("ui");
+      this.onMarkersClear();
+    });
+    for (const type of Object.keys(MARKER_TYPES)) {
+      $("btn-marker-" + type)?.addEventListener("click", () => {
+        this.markerType = type;
+        this.sound("choice");
+        this.updateMarkerPalette();
+      });
+    }
+    this.el.mapCanvas?.addEventListener("click", (e) => this.placeMarker(e));
+    this.el.mapScreen?.addEventListener("click", (e) => {
+      if (e.target === this.el.mapScreen) this.closeMap();
+    });
+    this.el.mapMarkerList?.addEventListener("click", (e) => {
+      const btn = e.target?.closest?.("[data-marker-index]");
+      if (!btn) return;
+      const index = Number(btn.getAttribute("data-marker-index"));
+      if (Number.isFinite(index)) {
+        this.sound("ui");
+        this.onMarkerRemove(index);
+      }
+    });
+    this.updateMarkerPalette();
+  }
+
+  updateMarkerPalette() {
+    for (const type of Object.keys(MARKER_TYPES)) {
+      $("btn-marker-" + type)?.classList.toggle("selected", type === this.markerType);
+    }
+  }
+
+  placeMarker(e) {
+    if (!this.mapTiles || !this.el.mapCanvas || !Number.isFinite(e.clientX) || !Number.isFinite(e.clientY)) return;
+    const rect = this.el.mapCanvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const rx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const ry = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    const x = rx * MAP_W * TILE;
+    const y = ry * MAP_H * TILE;
+    const base = MARKER_TYPES[this.markerType]?.label || "Метка";
+    let label = base;
+    let best = 460;
+    for (const lm of Object.values(this.mapScene?.landmarks || {})) {
+      const d = Math.hypot(lm.x - x, lm.y - y);
+      if (d < best) {
+        best = d;
+        label = `${base} · ${lm.label}`;
+      }
+    }
+    this.onMarkerAdd({ x: Math.round(x), y: Math.round(y), type: this.markerType, label });
+  }
+
+  setMarkers(markers) {
+    this.mapMarkers = Array.isArray(markers) ? markers.slice() : [];
+    if (this.el.mapMarkerCount) this.el.mapMarkerCount.textContent = `${this.mapMarkers.length}/24`;
+    const list = this.el.mapMarkerList;
+    if (!list) return;
+    if (!this.mapMarkers.length) {
+      list.innerHTML = `<div class="map-empty">Пока ни одной метки. Выбери тип и коснись карты.</div>`;
+      return;
+    }
+    list.innerHTML = this.mapMarkers
+      .map((m, i) => {
+        const color = MARKER_TYPES[m.type]?.color || MARKER_TYPES.goal.color;
+        return `<div class="map-marker-row">
+          <span class="mm-dot" style="--mm-color:${color}"></span>
+          <span class="mm-label">${escapeHtml(m.label || "Метка")}</span>
+          <span class="mm-coord">${Math.round(m.x / TILE)}, ${Math.round(m.y / TILE)}</span>
+          <button type="button" class="mm-remove" data-marker-index="${i}" title="Убрать метку">×</button>
+        </div>`;
+      })
+      .join("");
+  }
+
+  openMap() {
+    this.mapOpen = true;
+    this.el.mapScreen?.classList.remove("hidden");
+    this.mapDrawAt = 0;
+    this.updateMap(this.mapScene, this.mapTiles, this.mapMarkers, this.mapScene?.myId, true);
+  }
+
+  closeMap() {
+    this.mapOpen = false;
+    this.el.mapScreen?.classList.add("hidden");
+  }
+
+  isMapOpen() {
+    return this.mapOpen;
+  }
+
+  updateMap(scene, tiles, markers, myId, force = false) {
+    if (scene) this.mapScene = scene;
+    if (tiles) this.mapTiles = tiles;
+    if (Array.isArray(markers)) this.mapMarkers = markers;
+    if (!this.mapTiles || !this.mapScene) return;
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    if (!force && now - this.mapDrawAt < 180) return;
+    this.mapDrawAt = now;
+    if (this.el.minimapCanvas) {
+      this.drawMapCanvas(this.el.minimapCanvas, this.mapTiles, this.mapScene, this.mapMarkers, myId, false);
+    }
+    if (this.mapOpen && this.el.mapCanvas) {
+      this.drawMapCanvas(this.el.mapCanvas, this.mapTiles, this.mapScene, this.mapMarkers, myId, true);
+    }
+  }
+
+  drawMapCanvas(canvas, tiles, scene, markers, myId, big) {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const w = canvas.width;
+    const h = canvas.height;
+    if (!w || !h) return;
+    if (!this.mapBackdrop || this.mapBackdropTiles !== tiles || this.mapBackdrop.width !== MAP_W || this.mapBackdrop.height !== MAP_H) {
+      const bg = document.createElement("canvas");
+      bg.width = MAP_W;
+      bg.height = MAP_H;
+      const bctx = bg.getContext("2d");
+      if (bctx) {
+        for (let ty = 0; ty < MAP_H; ty++) {
+          for (let tx = 0; tx < MAP_W; tx++) {
+            bctx.fillStyle = MAP_TILE_COLORS[tiles[ty * MAP_W + tx]] || MAP_TILE_COLORS[T.HEATHER];
+            bctx.fillRect(tx, ty, 1, 1);
+          }
+        }
+      }
+      this.mapBackdrop = bg;
+      this.mapBackdropTiles = tiles;
+    }
+    ctx.clearRect(0, 0, w, h);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this.mapBackdrop, 0, 0, w, h);
+    const sx = w / (MAP_W * TILE);
+    const sy = h / (MAP_H * TILE);
+    const px = (x) => x * sx;
+    const py = (y) => y * sy;
+
+    // landmarks
+    for (const [key, lm] of Object.entries(scene.landmarks || {})) {
+      if (!lm || !Number.isFinite(lm.x)) continue;
+      const x = px(lm.x);
+      const y = py(lm.y);
+      ctx.fillStyle = "rgba(232,165,75,0.85)";
+      ctx.fillRect(x - 1.2, y - 1.2, 2.4, 2.4);
+      if (big) {
+        const label = lm.label || key;
+        ctx.font = "11px Georgia, serif";
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(230,220,200,0.62)";
+        ctx.fillText(label, x, y - 5);
+      }
+    }
+
+    // NPC
+    for (const npc of scene.npcs || []) {
+      if (!npc.alive) continue;
+      ctx.fillStyle = "#c9b27a";
+      ctx.beginPath();
+      ctx.arc(px(npc.x), py(npc.y), big ? 3 : 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // enemies
+    for (const e of scene.enemies || []) {
+      if (e.hp <= 0 || e.dormant) continue;
+      const x = px(e.x);
+      const y = py(e.y);
+      ctx.fillStyle = e.boss ? "#ffb0a0" : "rgba(200,90,80,0.9)";
+      ctx.beginPath();
+      ctx.arc(x, y, big ? (e.boss ? 5 : 2.6) : (e.boss ? 3 : 1.6), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // markers
+    for (const m of markers || []) {
+      const color = MARKER_TYPES[m.type]?.color || MARKER_TYPES.goal.color;
+      const x = px(m.x);
+      const y = py(m.y);
+      const r = big ? 6 : 3;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x, y - r);
+      ctx.lineTo(x + r, y);
+      ctx.lineTo(x, y + r);
+      ctx.lineTo(x - r, y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = "rgba(12,15,20,0.8)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // players last
+    for (const p of scene.players || []) {
+      if (p.downed) continue;
+      const def = CLASSES[p.cls] || CLASSES.lantern;
+      const x = px(p.x);
+      const y = py(p.y);
+      ctx.fillStyle = p.id === myId ? "#fff4d8" : def.color;
+      ctx.beginPath();
+      ctx.arc(x, y, p.id === myId ? (big ? 5 : 2.4) : (big ? 4 : 2), 0, Math.PI * 2);
+      ctx.fill();
+      if (p.id === myId) {
+        ctx.strokeStyle = "rgba(255,209,138,0.55)";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(x, y, big ? 9 : 4.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    if (big) {
+      ctx.strokeStyle = "rgba(232,165,75,0.2)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+    }
+  }
+
+  /* ---------- верстак ---------- */
+  bindWorkbench() {
+    $("btn-workbench-close")?.addEventListener("click", () => {
+      this.sound("ui");
+      this.closeWorkbench();
+    });
+    $("btn-workbench-done")?.addEventListener("click", () => {
+      this.sound("ui");
+      this.closeWorkbench();
+    });
+    this.el.workbench?.addEventListener("click", (e) => {
+      if (e.target === this.el.workbench) this.closeWorkbench();
+    });
+    this.el.workbenchList?.addEventListener("click", (e) => {
+      const btn = e.target?.closest?.("[data-upgrade-key]");
+      if (!btn || btn.disabled) return;
+      this.sound("choice");
+      this.onUpgrade(btn.getAttribute("data-upgrade-key"));
+    });
+  }
+
+  openWorkbench(player) {
+    this.workbenchOpen = true;
+    this.workbenchSig = "";
+    this.el.workbench?.classList.remove("hidden");
+    this.renderWorkbench(player || this.workbenchPlayer);
+  }
+
+  closeWorkbench() {
+    this.workbenchOpen = false;
+    this.el.workbench?.classList.add("hidden");
+  }
+
+  isWorkbenchOpen() {
+    return this.workbenchOpen;
+  }
+
+  updateWorkbench(player) {
+    if (!this.workbenchOpen) return;
+    this.renderWorkbench(player || this.workbenchPlayer);
+  }
+
+  renderWorkbench(player) {
+    if (!this.el.workbenchList) return;
+    const shards = player?.shards || 0;
+    const weapon = player?.weapon || {};
+    const sig = `${shards}:${Object.keys(WEAPON_UPGRADES).map((k) => weapon[k] || 0).join(",")}`;
+    if (sig === this.workbenchSig) return;
+    this.workbenchSig = sig;
+    this.workbenchPlayer = player;
+    if (this.el.workbenchShards) this.el.workbenchShards.textContent = String(shards);
+    this.el.workbenchList.innerHTML = Object.entries(WEAPON_UPGRADES)
+      .map(([key, def]) => {
+        const level = weapon[key] || 0;
+        const maxed = level >= def.max;
+        const cost = maxed ? 0 : def.costs[level];
+        const afford = shards >= cost;
+        const pips = Array.from({ length: def.max }, (_, i) => `<span class="upg-pip ${i < level ? "on" : ""}"></span>`).join("");
+        return `<div class="upg-row ${maxed ? "maxed" : ""}">
+          <div class="upg-main">
+            <div class="upg-title"><span>${escapeHtml(def.name)}</span><span class="upg-level">${level}/${def.max}</span></div>
+            <div class="upg-desc">${escapeHtml(def.desc)}</div>
+            <div class="upg-pips">${pips}</div>
+          </div>
+          <button type="button" class="btn upg-buy" data-upgrade-key="${key}" ${maxed || !afford ? "disabled" : ""}>
+            ${maxed ? "Предел" : `<span class="shard-glyph">◆</span> ${cost}`}
+          </button>
+        </div>`;
+      })
+      .join("");
+  }
+
 
   openChar(mode) {
     this.mode = mode;
@@ -169,6 +531,8 @@ export class UI {
 
   showMenu() {
     this.hideAllScreens();
+    this.closeMap();
+    this.closeWorkbench();
     this.el.menu.classList.remove("hidden");
     this.showHud(false);
     this.hideDialogue();
@@ -184,6 +548,8 @@ export class UI {
 
   showGame() {
     this.hideAllScreens();
+    this.closeMap();
+    this.closeWorkbench();
     this.el.hud.classList.remove("hidden");
     this.el.controls?.classList.remove("hidden");
     this.showHud(true);
@@ -232,6 +598,9 @@ export class UI {
     if (this.el.hpText) this.el.hpText.textContent = `${Math.ceil(me.hp)} / ${me.maxHp}`;
     if (this.el.memory) this.el.memory.style.width = `${memPct * 100}%`;
     if (this.el.memoryText) this.el.memoryText.textContent = `память ${Math.ceil(me.memory)}`;
+    if (this.el.shards && this.el.shards.textContent !== String(me.shards || 0)) {
+      this.el.shards.textContent = String(me.shards || 0);
+    }
     this.updateAbility(me, def);
     this.updateParty(scene, myId);
     this.updateQuest(scene);
@@ -257,12 +626,18 @@ export class UI {
     const main = QUEST_MAIN.stages[quest.main?.stage] || "";
     if (this.el.questMain && this.el.questMain.textContent !== main) this.el.questMain.textContent = main;
     const side = [];
-    const h = quest.side?.hunter ?? 3;
-    const n = quest.side?.name ?? 3;
-    const m = quest.side?.merchant ?? 2;
-    if (h < 3 && SIDE_QUESTS.hunter.stages[h]) side.push(SIDE_QUESTS.hunter.stages[h]);
-    if (n < 3 && SIDE_QUESTS.name.stages[n]) side.push(SIDE_QUESTS.name.stages[n]);
-    if (m < 2 && SIDE_QUESTS.merchant.stages[m]) side.push(SIDE_QUESTS.merchant.stages[m]);
+    const pushStage = (key, done) => {
+      const stage = quest.side?.[key] ?? 1;
+      if (done(stage) || !SIDE_QUESTS[key]?.stages[stage]) return;
+      side.push(SIDE_QUESTS[key].stages[stage]);
+    };
+    pushStage("hunter", (s) => s >= 3);
+    pushStage("name", (s) => s >= 3);
+    pushStage("merchant", (s) => s >= 2);
+    pushStage("herbs", (s) => s >= 3);
+    pushStage("beacons", (s) => s >= 3);
+    pushStage("barrows", (s) => s >= 3);
+    pushStage("truth", (s) => s >= 2);
     const sig = side.join("|");
     if (this.el.questSide && this.questSideSig !== sig) {
       this.questSideSig = sig;
@@ -521,6 +896,8 @@ export class UI {
   showEnd(endingId, stats = {}) {
     const ending = ENDINGS[endingId] || ENDINGS.hope;
     this.showHud(false);
+    this.closeMap();
+    this.closeWorkbench();
     this.hideDialogue();
     this.hidePause();
     this.el.end?.classList.remove("hidden");
@@ -530,7 +907,8 @@ export class UI {
       this.el.endStats.innerHTML = `
         <div><b>${stats.level ?? 1}</b>уровень</div>
         <div><b>${stats.kills ?? 0}</b>повержено</div>
-        <div><b>${stats.embers ?? 0}/3</b>уголька</div>`;
+        <div><b>${stats.embers ?? 0}/3</b>уголька</div>
+        <div><b>${stats.shards ?? 0}</b>осколков</div>`;
     }
     this.updateRotate(false);
   }

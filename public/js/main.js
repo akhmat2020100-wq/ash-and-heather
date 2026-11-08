@@ -10,6 +10,7 @@ import { Net, defaultWsUrl, expandJoinCandidates } from "./net.js";
 
 const SAVE_KEY = "ash-heather-save-v1";
 const SETTINGS_KEY = "ash-heather-settings-v1";
+const MARKER_KEY = "ash-heather-markers-v2";
 
 const canvas = document.getElementById("game");
 const renderer = new Renderer(canvas);
@@ -52,6 +53,8 @@ let hitSoundTimer = 0;
 let tipTimer = 0;
 let tipIndex = 0;
 let lastSentMove = { x: 0, y: 0 };
+let markers = [];
+let markerSeed = null;
 
 /* ---------- настройки и сохранение ---------- */
 function loadSettings() {
@@ -97,6 +100,68 @@ function clearSave() {
   try { localStorage.removeItem(SAVE_KEY); } catch {}
   saveData = null;
   ui.setContinueAvailable(false);
+}
+
+/* ---------- метки на карте ---------- */
+function loadMarkers(seed) {
+  if (seed == null) return [];
+  try {
+    const raw = localStorage.getItem(`${MARKER_KEY}:${seed}`);
+    const list = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(list)) return [];
+    return list
+      .filter((m) => m && Number.isFinite(m.x) && Number.isFinite(m.y) && typeof m.type === "string")
+      .slice(0, 24);
+  } catch {
+    return [];
+  }
+}
+
+function persistMarkers() {
+  if (markerSeed == null) return;
+  try { localStorage.setItem(`${MARKER_KEY}:${markerSeed}`, JSON.stringify(markers)); } catch {}
+}
+
+function setMarkerSeed(seed) {
+  if (seed == null || seed === markerSeed) return;
+  markerSeed = seed;
+  markers = loadMarkers(seed);
+  renderer.markers = markers;
+  ui.setMarkers(markers);
+}
+
+function addMarker(marker) {
+  if (!marker || markers.length >= 24) {
+    if (markers.length >= 24) ui.toast("Больше 24 меток не поместится на карте.");
+    return;
+  }
+  const tooClose = markers.some((m) => Math.hypot(m.x - marker.x, m.y - marker.y) < 44);
+  if (tooClose) {
+    ui.toast("Здесь уже есть метка. Поставь её чуть дальше.");
+    return;
+  }
+  markers.push(marker);
+  persistMarkers();
+  ui.setMarkers(markers);
+  audio.play("marker");
+  ui.toast(`Метка «${marker.label}» поставлена.`);
+}
+
+function removeMarker(index) {
+  if (index < 0 || index >= markers.length) return;
+  markers.splice(index, 1);
+  persistMarkers();
+  ui.setMarkers(markers);
+  audio.play("ui");
+}
+
+function clearMarkers() {
+  if (!markers.length) return;
+  markers = [];
+  persistMarkers();
+  ui.setMarkers(markers);
+  ui.toast("Метки убраны. Карта снова чистая.");
+  audio.play("ui");
 }
 
 function applySettings(next) {
@@ -171,6 +236,11 @@ ui.onEndMenu = () => {
   ui.showMenu();
 };
 ui.onSettingsChange = (s) => applySettings(s);
+ui.onMap = () => toggleMap();
+ui.onMarkerAdd = (marker) => addMarker(marker);
+ui.onMarkerRemove = (index) => removeMarker(index);
+ui.onMarkersClear = () => clearMarkers();
+ui.onUpgrade = (key) => sendAction("upgrade", { key });
 ui.onFullscreen = async () => {
   try {
     if (!document.fullscreenElement) {
@@ -204,6 +274,12 @@ function resetSessionState() {
   holdTimer = 0;
   tipTimer = 0;
   lastSentMove = { x: 0, y: 0 };
+  lastShootSoundAt = 0;
+  lastHitSoundAt = 0;
+  lastSlashSoundAt = 0;
+  ui.closeMap();
+  ui.closeWorkbench();
+  renderer.clearEffects();
   if (clientReadyTimer) {
     clearTimeout(clientReadyTimer);
     clientReadyTimer = null;
@@ -236,6 +312,7 @@ function startSolo(cfg, restore) {
     let ok = false;
     if (restore) ok = world.restoreSave(restore, "local");
     if (!ok) world.addPlayer("local", myName, myClass);
+    setMarkerSeed(seed);
     const me = world.players.get("local");
     if (me) {
       myName = me.name;
@@ -292,6 +369,7 @@ async function startHost(cfg) {
     myId = welcome.id;
     world = new World({ seed: randomSeed() });
     world.addPlayer(myId, myName, myClass);
+    setMarkerSeed(world.seed);
     setupMap();
     running = true;
     ui.setRoomChip("хост · 1/4");
@@ -440,6 +518,14 @@ function endSession(showFade = false) {
   myId = null;
   interp = new Map();
   renderer.sceneTiles = null;
+  renderer.markers = [];
+  renderer.clearEffects();
+  persistMarkers();
+  markerSeed = null;
+  markers = [];
+  ui.closeMap();
+  ui.closeWorkbench();
+  ui.setMarkers([]);
   ui.hideDialogue();
   ui.hidePause();
   ui.el.settings?.classList.add("hidden");
@@ -509,6 +595,7 @@ function handleClientMessage(msg) {
     if (!clientMap && msg.seed != null) {
       clientMap = createMap(msg.seed);
       renderer.sceneTiles = clientMap.tiles;
+      setMarkerSeed(msg.seed);
     }
     latestSnap = snap;
     snapAge = 0;
@@ -529,6 +616,7 @@ function handleClientMessage(msg) {
     if (msg.type === "worldSeed" && !clientMap) {
       clientMap = createMap(msg.seed);
       renderer.sceneTiles = clientMap.tiles;
+      setMarkerSeed(msg.seed);
     }
     return;
   }
@@ -556,6 +644,18 @@ const input = new Input({
     audio.unlock();
     if (!running || paused || gameEnded || !myId) return;
     if (!ui.el.settings.classList.contains("hidden") || !ui.el.help.classList.contains("hidden")) return;
+    if (action === "map") {
+      if (!ui.isDialogueOpen()) toggleMap();
+      return;
+    }
+    if (ui.isMapOpen()) {
+      if (action === "interact" || action === "attack" || action === "dodge") ui.closeMap();
+      return;
+    }
+    if (ui.isWorkbenchOpen()) {
+      if (action === "interact" || action === "attack") ui.closeWorkbench();
+      return;
+    }
     if (ui.isDialogueOpen()) {
       if (action === "attack") {
         if (ui.typing) ui.finishTyping();
@@ -576,6 +676,14 @@ const input = new Input({
       ui.closeHelp();
       return;
     }
+    if (ui.isMapOpen()) {
+      ui.closeMap();
+      return;
+    }
+    if (ui.isWorkbenchOpen()) {
+      ui.closeWorkbench();
+      return;
+    }
     togglePause();
   },
   onChoice: (index) => {
@@ -590,6 +698,18 @@ function sendAction(action, data = {}) {
   } else if (world) {
     world.action(myId, action, data);
   }
+}
+
+function toggleMap() {
+  if (!running || gameEnded || paused) return;
+  if (ui.isMapOpen()) {
+    ui.closeMap();
+    return;
+  }
+  ui.closeWorkbench();
+  input.clearHeld();
+  ui.openMap();
+  audio.play("map");
 }
 
 function togglePause() {
@@ -623,7 +743,9 @@ function resumeGame() {
 
 window.addEventListener("resize", () => ui.updateRotate(running));
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden && running && !paused && !gameEnded && mode === "solo") togglePause();
+  if (!document.hidden) return;
+  input.reset();
+  if (running && !paused && !gameEnded && mode === "solo") togglePause();
 });
 window.addEventListener("beforeunload", () => {
   if (world && myId && !gameEnded && (mode === "solo" || mode === "host")) persistSave();
@@ -652,7 +774,8 @@ function loop(now) {
 /* INIT_MAIN_3 */
 function tick(dt) {
   const dialogueOpen = ui.isDialogueOpen();
-  const canControl = !paused && !gameEnded && !dialogueOpen;
+  const overlayOpen = ui.isMapOpen() || ui.isWorkbenchOpen();
+  const canControl = !paused && !gameEnded && !dialogueOpen && !overlayOpen;
   const mv = canControl ? input.move : { x: 0, y: 0 };
 
   if (mode === "client") {
@@ -737,8 +860,11 @@ function tick(dt) {
     if (hudTimer <= 0) {
       hudTimer = 0.07;
       ui.updateHud(scene, myId);
+      ui.updateMap(scene, renderer.sceneTiles, markers, myId);
+      ui.updateWorkbench(me);
     }
     if (me.dialogue && !gameEnded) {
+      input.clearHeld();
       ui.renderDialogue(me.dialogue, {
         choose: (i) => sendAction("choice", { index: i }),
         close: () => sendAction("closeDialogue"),
@@ -759,6 +885,7 @@ function tick(dt) {
     }
   }
 
+  renderer.markers = markers;
   renderer.update(dt, scene, myId);
   renderer.draw(scene, myId);
   audio.update(dt);
@@ -832,6 +959,12 @@ function computeHint(scene, me) {
     if (d > 70 + (p.r || 0) * 0.4) continue;
     let text = "Действие — осмотреть";
     if (p.interact.kind === "campfire") text = "Действие — отдохнуть у огня";
+    else if (p.interact.kind === "workbench") text = "Действие — верстак и прокачка оружия";
+    else if (p.interact.kind === "herb") text = "Действие — сорвать траву";
+    else if (p.interact.kind === "beacon") {
+      const key = p.id.replace(/^beacon_/, "");
+      text = scene.flags?.beaconsLit?.[key] ? "Сигнальный огонь уже горит" : "Действие — зажечь сигнальный огонь";
+    }
     else if (p.interact.kind === "door") text = scene.flags?.chapelOpen ? "Действие — войти в часовню" : "Действие — осмотреть дверь";
     else if (p.interact.kind === "shrine") text = "Действие — коснуться алтаря";
     else if (p.interact.kind === "dialogue") {
@@ -847,6 +980,8 @@ function computeHint(scene, me) {
 /* INIT_MAIN_4 */
 let lastHitSoundAt = 0;
 let lastSlashSoundAt = 0;
+let lastShootSoundAt = 0;
+let lastShardSoundAt = 0;
 
 function eventPlayerPos(id) {
   const fromWorld = world?.players.get(id);
@@ -854,6 +989,10 @@ function eventPlayerPos(id) {
   const fromSnap = latestSnap?.players?.find((p) => p.id === id);
   if (fromSnap) return { x: fromSnap.x, y: fromSnap.y };
   return null;
+}
+
+function localPlayerState() {
+  return world?.players.get(myId) || latestSnap?.players?.find((p) => p.id === myId) || scene?.players?.find((p) => p.id === myId) || null;
 }
 
 function handleEvents(events) {
@@ -899,7 +1038,10 @@ function routeEvent(e) {
       renderer.addBurst("particle", e.x + Math.cos(e.a) * 14, e.y + Math.sin(e.a) * 14, {
         a: e.a, spread: 0.5, speed: 60, color: "#d7e8c8", count: 3, ttl: 0.25,
       });
-      audio.play("shoot");
+      if (performance.now() - lastShootSoundAt > 70) {
+        lastShootSoundAt = performance.now();
+        audio.play("shoot");
+      }
       break;
     case "pierce":
       renderer.addBurst("particle", e.x, e.y, { a: e.a, spread: 0.35, speed: 110, color: "#b8e0c4", count: 6, ttl: 0.3 });
@@ -952,6 +1094,41 @@ function routeEvent(e) {
       audio.play("ember");
       break;
     }
+    case "shard": {
+      renderer.addBurst("particle", e.x, e.y, { color: "#f0cf82", count: 4, speed: 34, lift: 18, ttl: 0.35, gravity: 30 });
+      if (e.id === myId) {
+        renderer.addFloater(e.x, e.y - 18, `+${e.amount} осколков`, "#f0cf82");
+        if (performance.now() - lastShardSoundAt > 90) {
+          lastShardSoundAt = performance.now();
+          audio.play("shard");
+        }
+      }
+      break;
+    }
+    case "upgrade":
+      if (e.id === myId) {
+        audio.play("upgrade");
+        renderer.addBurst("particle", localPlayerState()?.x || 0, (localPlayerState()?.y || 0) - 14, {
+          color: "#ffe6bd", count: 18, speed: 60, lift: 44, ttl: 0.8,
+        });
+      }
+      break;
+    case "workbench":
+      if (e.id === myId) {
+        input.clearHeld();
+        ui.openWorkbench(localPlayerState());
+        audio.play("ui");
+      }
+      break;
+    case "herb":
+      renderer.addBurst("particle", e.x, e.y, { color: "#bcd8a8", count: 10, speed: 46, lift: 26, ttl: 0.55 });
+      if (e.id === myId) audio.play("herb");
+      break;
+    case "beacon":
+      renderer.addBurst("particle", e.x, e.y, { color: "#ffbd6a", count: 24, speed: 74, lift: 50, ttl: 0.9 });
+      renderer.addBurst("slam", e.x, e.y, { radius: 50 });
+      if (e.id === myId) audio.play("beacon");
+      break;
     case "levelUp": {
       const pos = eventPlayerPos(e.id);
       if (pos) renderer.addBurst("particle", pos.x, pos.y, { color: "#ffe6bd", count: 24, speed: 90, lift: 60, ttl: 0.9 });
@@ -1093,6 +1270,14 @@ function boot() {
       if (gameEnded) {
         endSession();
         ui.showMenu();
+        return true;
+      }
+      if (ui.isMapOpen()) {
+        ui.closeMap();
+        return true;
+      }
+      if (ui.isWorkbenchOpen()) {
+        ui.closeWorkbench();
         return true;
       }
       if (ui.isDialogueOpen()) return true;

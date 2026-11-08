@@ -420,7 +420,21 @@ if (smokeMode === "host") {
   if (ash.world.quest.main.stage !== 1) throw new Error("квест не начался");
   frames(3);
 
-  ash.ui.showEnd("hope", { level: 2, kills: 3, embers: 3 });
+  const markers = [{ x: me.x + 40, y: me.y, type: "goal", label: "Тестовая метка" }];
+  ash.ui.setMarkers(markers);
+  ash.ui.openMap();
+  if (!ash.ui.isMapOpen()) throw new Error("карта не открылась");
+  ash.ui.updateMap(ash.scene, ash.renderer.sceneTiles, markers, "local", true);
+  ash.ui.closeMap();
+  if (ash.ui.isMapOpen()) throw new Error("карта не закрылась");
+
+  ash.ui.openWorkbench({ ...me, shards: 12, weapon: { damage: 1, speed: 0, aim: 0, resonance: 0 } });
+  if (!ash.ui.isWorkbenchOpen()) throw new Error("верстак не открылся");
+  ash.ui.updateWorkbench({ ...me, shards: 12, weapon: { damage: 1, speed: 0, aim: 0, resonance: 0 } });
+  ash.ui.closeWorkbench();
+  if (ash.ui.isWorkbenchOpen()) throw new Error("верстак не закрылся");
+
+  ash.ui.showEnd("hope", { level: 2, kills: 3, embers: 3, shards: 12 });
   frames(3);
   if (ash.ui.el.end.classList.contains("hidden")) throw new Error("экран финала не показан");
 

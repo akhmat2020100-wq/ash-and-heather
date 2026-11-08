@@ -1,8 +1,8 @@
 /* Пепел и Вереск — карта, коллизии, генерация мира */
 
 export const TILE = 32;
-export const MAP_W = 88;
-export const MAP_H = 64;
+export const MAP_W = 144;
+export const MAP_H = 104;
 
 export const T = {
   HEATHER: 0,
@@ -190,6 +190,61 @@ export function createMap(seed = 20261107) {
   clearRect(38, 48, 51, 56, T.STONE);
   stamp(44, 52, 5, T.STONE);
 
+  // --- east: Соляная топь ---
+  clearRect(90, 34, 124, 64, T.HEATHER);
+  path([[81, 36], [88, 37], [95, 41], [101, 45]], 3, T.DIRT);
+  path([[108, 48], [114, 54]], 2, T.DIRT);
+  clearRect(96, 40, 109, 51, T.DIRT);
+  stamp(103, 56, 5, T.WATER, true);
+  stamp(117, 47, 3, T.WATER, true);
+  stamp(119, 60, 4, T.WATER, true);
+  stamp(112, 62, 3, T.WATER, true);
+  for (let i = 0; i < 26; i++) {
+    const x = 92 + Math.floor(rng() * 30);
+    const y = 36 + Math.floor(rng() * 26);
+    if (rng() < 0.55) stamp(x, y, 1, T.MOSS);
+  }
+  clearRect(110, 51, 119, 59, T.MOSS);
+  path([[100, 64], [105, 61], [110, 58]], 2, T.DIRT);
+
+  // --- north-east: кратер Тихой Звезды ---
+  clearRect(88, 4, 116, 24, T.HEATHER);
+  path([[57, 24], [64, 20], [72, 16], [81, 14], [89, 14]], 3, T.DIRT);
+  stamp(100, 14, 9, T.STONE);
+  stamp(100, 14, 5, T.ASH);
+  stamp(101, 14, 2, T.FLOOR);
+  for (let i = 0; i < 18; i++) {
+    const a = rng() * Math.PI * 2;
+    const r = 6 + rng() * 8;
+    stamp(100 + Math.cos(a) * r, 14 + Math.sin(a) * r, 1, rng() < 0.5 ? T.ASH : T.MOSS);
+  }
+
+  // --- south: Курганы ---
+  clearRect(58, 64, 102, 96, T.HEATHER);
+  path([[44, 56], [49, 62], [56, 68], [64, 73], [72, 78], [82, 82]], 3, T.DIRT);
+  for (const [bx, by, br] of [[63, 74, 3], [76, 88, 4], [90, 73, 3], [95, 88, 3], [70, 92, 2], [86, 92, 2]]) {
+    stamp(bx, by, br, T.ASH, true);
+    stamp(bx, by, Math.max(1, br - 2), T.STONE);
+  }
+  for (let i = 0; i < 22; i++) {
+    const x = 60 + Math.floor(rng() * 40);
+    const y = 66 + Math.floor(rng() * 28);
+    if (rng() < 0.45) stamp(x, y, 1, T.ASH);
+  }
+
+  // --- west: Вересковая мельница и топь ---
+  clearRect(8, 56, 33, 92, T.HEATHER);
+  path([[12, 40], [12, 50], [15, 58], [19, 66], [22, 72]], 2, T.DIRT);
+  stamp(16, 80, 5, T.WATER, true);
+  stamp(11, 73, 3, T.WATER, true);
+  stamp(27, 84, 4, T.WATER, true);
+  stamp(22, 71, 4, T.DIRT);
+  for (let i = 0; i < 18; i++) {
+    const x = 9 + Math.floor(rng() * 23);
+    const y = 58 + Math.floor(rng() * 32);
+    if (rng() < 0.6) stamp(x, y, 1, T.MOSS);
+  }
+
   // --- settlements props ---
   const hut = (cx, cy, w = 5, h = 4) => {
     props.push({
@@ -321,10 +376,109 @@ export function createMap(seed = 20261107) {
       interact: { kind: "dialogue", script },
       sort: cy * TILE,
     });
+    reserve(cx, cy, 1);
   };
   note(37, 30, "noteDiary");
   note(48, 39.5, "noteGrave", "grave");
   note(38, 12, "noteChapel", "rune");
+
+  // --- верстак у последнего очага ---
+  props.push({
+    id: "workbench",
+    type: "workbench",
+    x: 47.5 * TILE,
+    y: 36.5 * TILE,
+    r: 13,
+    solid: true,
+    shape: "circle",
+    interact: { kind: "workbench" },
+    sort: 36.5 * TILE,
+  });
+  reserve(47, 36, 2);
+
+  // --- Соляная топь: огонь, хижины, лодка ---
+  const saltFire = {
+    id: "salt_fire",
+    type: "campfire",
+    x: 102 * TILE,
+    y: 47 * TILE,
+    r: 12,
+    solid: true,
+    shape: "circle",
+    interact: { kind: "campfire" },
+    sort: 47 * TILE,
+  };
+  props.push(saltFire);
+  reserve(102, 47, 2);
+  hut(96.5, 43.5, 4, 3);
+  hut(108, 43, 4, 3);
+  props.push({
+    id: "ferry_boat",
+    type: "boat",
+    x: 114.5 * TILE,
+    y: 55.5 * TILE,
+    r: 13,
+    solid: false,
+    shape: "circle",
+    sort: 55.5 * TILE,
+  });
+  reserve(114, 55, 2);
+
+  // три травы знахарки
+  for (const [hx, hy] of [[94, 48], [113, 42], [121, 54]]) {
+    props.push({
+      id: `herb_${hx}_${hy}`,
+      type: "herb",
+      x: hx * TILE,
+      y: hy * TILE,
+      r: 8,
+      solid: false,
+      shape: "circle",
+      interact: { kind: "herb" },
+      sort: hy * TILE,
+    });
+    reserve(hx, hy, 2);
+  }
+
+  // --- Вересковая мельница ---
+  props.push({
+    id: "old_mill",
+    type: "mill",
+    x: 21 * TILE,
+    y: 72 * TILE,
+    w: 4.6 * TILE,
+    h: 5.2 * TILE,
+    solid: true,
+    shape: "rect",
+    sort: 74.5 * TILE,
+  });
+  reserve(21, 72, 3);
+  note(25.5, 69.5, "noteMill");
+
+  // --- северный кратер: руна и примета ---
+  note(95, 11, "noteStar", "rune");
+
+  // --- курганы: надпись ---
+  note(68, 82, "noteBarrow", "grave");
+
+  // --- сигнальные огни ---
+  const beacon = (id, tx, ty) => {
+    props.push({
+      id: `beacon_${id}`,
+      type: "beacon",
+      x: tx * TILE,
+      y: ty * TILE,
+      r: 10,
+      solid: true,
+      shape: "circle",
+      interact: { kind: "beacon" },
+      sort: ty * TILE,
+    });
+    reserve(tx, ty, 2);
+  };
+  beacon("mill", 27, 77);
+  beacon("ridge", 104, 18);
+  beacon("barrow", 87, 88);
 
   // --- NPCs ---
   const npc = (id, name, dialogue, tx, ty, color, cloak) => {
@@ -346,6 +500,11 @@ export function createMap(seed = 20261107) {
   npc("child", "Девочка", "child", 42, 31.5, "#e0c7b2", "#5a3d3a");
   npc("merchant", "Ворон", "merchant", 38.5, 31.5, "#b6a7c7", "#2e2a3c");
   npc("hunter", "Раненый охотник", "hunter", 72.5, 38.5, "#b9a58c", "#3d4232");
+  npc("mila", "Знахарка Мила", "mila", 104.5, 45.5, "#bfd2ae", "#38483a");
+  npc("garm", "Перевозчик Гарм", "garm", 113.5, 53.5, "#b8b0a0", "#343b46");
+  npc("ada", "Могильщица Ада", "ada", 72, 80, "#c4b8a8", "#3f3a3a");
+  npc("hermit", "Отшельник Каль", "hermit", 100.5, 16.5, "#c0c8d8", "#30323e");
+  npc("miller", "Мельник Тихон", "miller", 23.5, 70.5, "#cbb79c", "#443b32");
 
   // --- random wilderness props ---
   const placeProp = (type, tx, ty, rngValue) => {
@@ -399,7 +558,7 @@ export function createMap(seed = 20261107) {
   };
 
   let placed = 0;
-  for (let i = 0; i < 260 && placed < 95; i++) {
+  for (let i = 0; i < 820 && placed < 280; i++) {
     const tx = 5 + Math.floor(rng() * (MAP_W - 10));
     const ty = 5 + Math.floor(rng() * (MAP_H - 10));
     const r = rng();
@@ -421,6 +580,21 @@ export function createMap(seed = 20261107) {
   spawnZone(21, 38, "hollow", 2, 3);
   spawnZone(67, 44, "hound", 2, 3);
   spawnZone(13, 45, "weeper", 2, 3);
+  // Соляная топь
+  spawnZone(94, 50, "hound", 3, 4);
+  spawnZone(117, 44, "wisp", 2, 3);
+  spawnZone(114, 62, "wisp", 2, 3);
+  spawnZone(109, 70, "barrow", 2, 3);
+  // северный кратер
+  spawnZone(96, 20, "hollow", 3, 4);
+  spawnZone(108, 20, "hound", 2, 3);
+  // курганы
+  spawnZone(63, 78, "barrow", 3, 4);
+  spawnZone(88, 78, "barrow", 3, 4);
+  spawnZone(96, 90, "hollow", 2, 3);
+  // западная топь
+  spawnZone(15, 66, "wisp", 3, 4);
+  spawnZone(25, 84, "hound", 2, 3);
   // guardian of the southern shrine
   spawns.push({ x: 44 * TILE, y: 49 * TILE, type: "guardian", count: 1, radius: TILE * 2, fixed: true });
   reserve(44, 49, 3);
@@ -433,6 +607,12 @@ export function createMap(seed = 20261107) {
   landmarks.hunter = { x: 72.5 * TILE, y: 38.5 * TILE, label: "Лагерь охотника" };
   landmarks.shrine = { x: 44 * TILE, y: 52 * TILE, label: "Южный алтарь" };
   landmarks.campfire = { x: 44 * TILE, y: 33 * TILE, label: "Последний Очаг" };
+  landmarks.workbench = { x: 47.5 * TILE, y: 36.5 * TILE, label: "Верстак" };
+  landmarks.saltMarsh = { x: 102 * TILE, y: 47 * TILE, label: "Соляная топь" };
+  landmarks.ferry = { x: 114 * TILE, y: 54 * TILE, label: "Перевоз" };
+  landmarks.starCrater = { x: 100 * TILE, y: 14 * TILE, label: "Тихая Звезда" };
+  landmarks.barrows = { x: 76 * TILE, y: 82 * TILE, label: "Курганы" };
+  landmarks.mill = { x: 21 * TILE, y: 72 * TILE, label: "Вересковая мельница" };
 
   // spatial grid for solid props
   const propGrid = new Map();

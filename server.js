@@ -152,7 +152,7 @@ const server = Bun.serve({
         port: PORT,
         wsPort: PORT,
         lan: lanAddresses(),
-        version: "0.1.0",
+        version: "0.2.0",
       }, {
         headers: {
           "Cache-Control": "no-store",
