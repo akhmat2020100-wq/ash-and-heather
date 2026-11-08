@@ -1,6 +1,14 @@
-/* Пепел и Вереск — симуляция мира (общая для соло и хоста) */
-import { createMap, TILE } from "./map.js";
-import { CLASSES, ENEMY_TYPES, DIALOGUES, NPCS, QUEST_MAIN, SIDE_QUESTS, WEAPON_UPGRADES } from "./data.js";
+/* Пепел и Вереск — симуляция мира v0.4 (общая для соло и хоста) */
+import { createMap, TILE, tileCenter } from "./map.js";
+import {
+  CLASSES,
+  ENEMY_TYPES,
+  DIALOGUES,
+  QUEST_MAIN,
+  SIDE_QUESTS,
+  SHOP_ITEMS,
+  WEAPON_UPGRADES,
+} from "./data.js";
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const dist2 = (ax, ay, bx, by) => (ax - bx) ** 2 + (ay - by) ** 2;
@@ -19,6 +27,18 @@ const angleDiff = (a, b) => {
 
 let idCounter = 1;
 const uid = (p) => `${p}${idCounter++}`;
+const SPAWN_SAFE_DIST = 640;
+// Врагов нельзя ставить ближе этого зазора за краем экрана: иначе они
+// возникают ровно на кромке и видно, как они «хлопают» из воздуха.
+const SPAWN_VIEW_MARGIN = 140;
+const DEFAULT_VIEW = { w: 960, h: 600, zoom: 1 };
+const EMPTY_WEAPON = () => ({ damage: 0, speed: 0, aim: 0, resonance: 0 });
+const DAUGHTER_POS = {
+  bed: tileCenter(50, 41.5),
+  cage: tileCenter(177, 29),
+  table: tileCenter(51.6, 51.3),
+  door: tileCenter(53, 52.3),
+};
 
 export class World {
   constructor({ seed = 20261107, solo = false } = {}) {
@@ -33,19 +53,37 @@ export class World {
     this.events = [];
     this.eventId = 1;
     this.nextEnemyId = 1;
+    this.view = { ...DEFAULT_VIEW };
     this.respawnQueue = [];
+    this.spawnCheckTimer = 0.4;
+    this.bossSyncTimer = 1;
+    this.storyCheckTimer = 0.25;
     this.npcs = this.map.npcs.map((n) => ({ ...n, alive: true }));
+
+    // Карта процедурная: точка «на глаз» иногда попадает в скалу. Тогда
+    // страж зоны никогда не спавнится, а отшельник недостижим.
+    // Прижимаем такие точки к ближайшей проходимой земле.
+    const snapToWalkable = (entity, radius = 12, search = 160) => {
+      if (!this.map.isBlocked(entity.x, entity.y, radius)) return;
+      for (let attempt = 1; attempt <= 8; attempt++) {
+        const pos = this.map.randomWalkableNear(entity.x, entity.y, search * attempt);
+        if (!this.map.isBlocked(pos.x, pos.y, radius)) {
+          entity.x = pos.x;
+          entity.y = pos.y;
+          return;
+        }
+      }
+    };
+    for (const npc of this.npcs) snapToWalkable(npc, 12, 200);
     this.flags = {
-      embers: 0,
-      emberKinds: { loyalty: false, memory: false, peace: false },
-      chapelOpen: false,
-      riteStarted: false,
-      riteReady: false,
-      riteNames: { mila: false, garm: false, ada: false },
+      clues: { lantern: false, ribbon: false, tracks: false },
+      cluesFound: 0,
+      kidnapDone: false,
       bossActive: false,
       bossDead: false,
-      hasHeart: false,
-      guardianDead: false,
+      daughterTucked: false,
+      daughterState: "home",
+      rescuer: null,
       nameChoice: null,
       merchantTrade: false,
       shrineBlessed: false,
@@ -56,16 +94,50 @@ export class World {
       beacons: 0,
       barrows: 0,
       truthKnown: false,
-      merchantRefused: false,
       millStory: false,
+      millClue: false,
       herbCollected: {},
       beaconsLit: {},
+      salt: false,
+      bossIntroSeen: false,
     };
     this.quest = {
       main: { stage: 0 },
-      side: { hunter: 1, name: 1, merchant: 1, herbs: 1, beacons: 1, barrows: 1, truth: 1 },
+      side: { hunter: 1, name: 1, mill: 1, herbs: 1, beacons: 1, barrows: 1, truth: 1 },
     };
-    this.spawnMapEnemies();
+    this.daughter = {
+      id: "daughter",
+      name: "Лира",
+      x: DAUGHTER_POS.bed.x,
+      y: DAUGHTER_POS.bed.y,
+      state: "home",
+      facing: Math.PI / 2,
+      radius: 7,
+      visible: true,
+      step: 0,
+    };
+
+    this.zones = this.map.spawns
+      .filter((zone) => !zone.boss && !zone.fixed)
+      .map((zone, i) => {
+        const normalized = { ...zone };
+        snapToWalkable(normalized, 20, 220);
+        return {
+          ...normalized,
+          id: `zone_${i}`,
+          alive: 0,
+          pendingCount: zone.count,
+          nextAt: 0,
+        };
+      });
+    this.fixedSpawns = this.map.spawns.filter((zone) => zone.fixed && !zone.boss);
+    this.bossZone = this.map.spawns.find((zone) => zone.boss) || null;
+    this.boss = null;
+    this.spawnBoss();
+    for (const zone of this.fixedSpawns) {
+      const enemy = this.spawnEnemy(zone.type, zone.x, zone.y, { zone, fixed: true, force: true });
+      if (zone.type === "guardian" && enemy) enemy.elite = true;
+    }
   }
 
   emit(type, data = {}) {
@@ -78,25 +150,92 @@ export class World {
     return e;
   }
 
-  spawnMapEnemies() {
-    for (const zone of this.map.spawns) {
-      if (zone.type === "boss") {
-        this.spawnEnemy("boss", zone.x, zone.y, { fixed: true, boss: true, zone });
-        continue;
-      }
-      if (zone.fixed) {
-        const e = this.spawnEnemy(zone.type, zone.x, zone.y, { fixed: true, zone });
-        if (zone.type === "guardian") e.elite = true;
-        continue;
-      }
-      for (let i = 0; i < zone.count; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const r = Math.random() * zone.radius;
-        const x = zone.x + Math.cos(a) * r;
-        const y = zone.y + Math.sin(a) * r;
-        this.spawnEnemy(zone.type, x, y, { zone });
-      }
+  /* ---------- враги: появление только вне поля зрения ---------- */
+
+  spawnBoss() {
+    if (!this.bossZone) return null;
+    const boss = this.spawnEnemy("boss", this.bossZone.x, this.bossZone.y, {
+      fixed: true,
+      boss: true,
+      force: true,
+      zone: this.bossZone,
+    });
+    if (boss) {
+      boss.dormant = true;
+      boss.active = false;
+      boss.maxHp = ENEMY_TYPES.boss.hp;
+      boss.hp = boss.maxHp;
+      boss.damage = ENEMY_TYPES.boss.damage;
+      this.boss = boss;
     }
+    return boss;
+  }
+
+  // main.js кормит ворлд реальным размером канваса и зумом камеры, чтобы
+  // зона «вне экрана» совпадала с тем, что игрок(и) действительно видят.
+  setViewport(w, h, zoom) {
+    if (!Number.isFinite(w) || !Number.isFinite(h)) return;
+    this.view.w = Math.max(240, w);
+    this.view.h = Math.max(180, h);
+    this.view.zoom = clamp(Number.isFinite(zoom) ? zoom : 1, 0.5, 3);
+  }
+
+  // Полуразмеры видимой области в мировых пикселях.
+  viewHalf() {
+    const zoom = this.view.zoom || 1;
+    return {
+      x: this.view.w / 2 / zoom + SPAWN_VIEW_MARGIN,
+      y: this.view.h / 2 / zoom + SPAWN_VIEW_MARGIN,
+    };
+  }
+
+  // Точка вне экрана у каждого игрока — иначе кто-то из кооп-братьев
+  // увидит, как враг материализуется на кромке его кадра.
+  outsideAllViews(x, y) {
+    const half = this.viewHalf();
+    for (const p of this.players.values()) {
+      if (Math.abs(x - p.x) <= half.x && Math.abs(y - p.y) <= half.y) return false;
+    }
+    return true;
+  }
+
+  canSpawnAt(x, y, pad = 12) {
+    if (this.map.isBlocked(x, y, pad)) return false;
+    for (const p of this.players.values()) {
+      if (dist(x, y, p.x, p.y) < SPAWN_SAFE_DIST) return false;
+    }
+    return this.outsideAllViews(x, y);
+  }
+
+  pickZonePoint(zone) {
+    for (let i = 0; i < 18; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * zone.radius;
+      const x = zone.x + Math.cos(a) * r;
+      const y = zone.y + Math.sin(a) * r;
+      if (this.canSpawnAt(x, y, 14)) return { x, y };
+    }
+    const fallback = this.map.randomWalkableNear(zone.x, zone.y, zone.radius);
+    if (this.canSpawnAt(fallback.x, fallback.y, 14)) return fallback;
+    return null;
+  }
+
+  updateSpawning(dt) {
+    this.spawnCheckTimer -= dt;
+    if (this.spawnCheckTimer > 0) return;
+    this.spawnCheckTimer = 0.4;
+    for (const zone of this.zones) {
+      if (zone.pendingCount <= 0) continue;
+      if (this.time < zone.nextAt) continue;
+      const point = this.pickZonePoint(zone);
+      // Если безопасного места нет — зона ждёт. Враги не появляются на глазах.
+      if (!point) continue;
+      const enemy = this.spawnEnemy(zone.type, point.x, point.y, { zone, force: true });
+      if (!enemy) continue;
+      zone.pendingCount--;
+      zone.alive++;
+    }
+    this.updateRespawns();
   }
 
   spawnEnemy(type, x, y, opts = {}) {
@@ -147,6 +286,20 @@ export class World {
     return enemy;
   }
 
+  updateRespawns() {
+    for (let i = this.respawnQueue.length - 1; i >= 0; i--) {
+      const r = this.respawnQueue[i];
+      if (this.time < r.at) continue;
+      if (!this.canSpawnAt(r.x, r.y, 14)) continue;
+      this.respawnQueue.splice(i, 1);
+      const zone = this.zones.find((z) => z.id === r.zoneId) || r.zone || null;
+      const enemy = this.spawnEnemy(r.type, r.x, r.y, { zone, force: true });
+      if (enemy && zone) zone.alive++;
+    }
+  }
+
+  /* ---------- игроки ---------- */
+
   addPlayer(id, name, cls, opts = {}) {
     if (this.players.has(id)) return this.players.get(id);
     const def = CLASSES[cls] || CLASSES.lantern;
@@ -160,6 +313,7 @@ export class World {
       radius: 10,
       hp: def.hp,
       maxHp: def.hp,
+      baseMaxHp: def.hp,
       memory: 100,
       maxMemory: 100,
       speed: def.speed,
@@ -183,7 +337,11 @@ export class World {
       kills: 0,
       bonusDamage: 0,
       shards: 0,
-      weapon: { damage: 0, speed: 0, aim: 0, resonance: 0 },
+      coins: 0,
+      weapon: EMPTY_WEAPON(),
+      equipment: { weapon: null, armor: null },
+      damageReduce: 0,
+      shopOpen: false,
       reviveTargetId: null,
       reviveTimer: 0,
       reviveDuration: 1.5,
@@ -195,40 +353,52 @@ export class World {
       Object.assign(player, opts.restore);
       player.cls = def.id;
       player.dialogue = null;
+      player.dialogueView = null;
       player.talking = false;
       player.downed = false;
       player.reviveTargetId = null;
       player.channeling = false;
+      player.shopOpen = false;
       player.input = { mx: 0, my: 0 };
+      player.weapon = EMPTY_WEAPON();
+      Object.assign(player.weapon, opts.restore.weapon || {});
+      player.equipment = { weapon: null, armor: null, ...(opts.restore.equipment || {}) };
+      player.coins = Math.max(0, opts.restore.coins || 0);
+      player.maxHp = Math.max(1, opts.restore.maxHp || player.maxHp);
+      player.hp = clamp(opts.restore.hp ?? player.maxHp, 1, player.maxHp);
+      player.maxMemory = Math.max(1, opts.restore.maxMemory || player.maxMemory);
+      player.memory = clamp(opts.restore.memory ?? player.maxMemory, 0, player.maxMemory);
+      const armor = SHOP_ITEMS[player.equipment.armor];
+      player.damageReduce = armor?.reduce || 0;
     }
     this.players.set(id, player);
+    this.syncBossScaling();
     this.emit("playerJoin", { id, name: player.name, cls: player.cls, x: player.x, y: player.y });
     return player;
   }
 
   findSpawn(x, y) {
     if (x != null && y != null && !this.map.isBlocked(x, y, 12)) return { x, y };
-    const candidates = [
-      [46, 35.5],
-      [42, 36.5],
-      [46, 30.5],
-      [40, 34.5],
-      [43, 37.5],
+    const home = [
+      [50, 51.2],
+      [49, 51.6],
+      [51, 51.6],
+      [47, 52.2],
+      [55, 52.2],
     ];
-    for (const [tx, ty] of candidates) {
-      const px = tx * TILE;
-      const py = ty * TILE;
-      if (!this.map.isBlocked(px, py, 12)) return { x: px, y: py };
+    for (const [tx, ty] of home) {
+      const pos = tileCenter(tx, ty);
+      if (!this.map.isBlocked(pos.x, pos.y, 12)) return pos;
     }
-    return this.map.randomWalkableNear(44 * TILE, 34 * TILE, 140);
+    return this.map.randomWalkableNear(50 * TILE, 51 * TILE, 90);
   }
 
   removePlayer(id) {
     const p = this.players.get(id);
     if (!p) return;
     this.players.delete(id);
+    if (this.flags.rescuer === id) this.flags.rescuer = null;
     this.emit("playerLeave", { id, name: p.name });
-    // cancel any revive channels targeting this player
     for (const other of this.players.values()) {
       if (other.reviveTargetId === id) {
         other.reviveTargetId = null;
@@ -236,12 +406,13 @@ export class World {
         other.channeling = false;
       }
     }
+    this.syncBossScaling();
   }
 
   setMove(id, mx, my) {
     const p = this.players.get(id);
     if (!p) return;
-    if (p.downed || p.talking) {
+    if (p.downed || p.talking || p.shopOpen) {
       p.input.mx = 0;
       p.input.my = 0;
       return;
@@ -256,6 +427,34 @@ export class World {
     if (n.x || n.y) p.facing = Math.atan2(n.y, n.x);
   }
 
+  syncBossScaling() {
+    const boss = this.boss;
+    if (!boss || boss.hp <= 0) return;
+    const count = Math.max(1, this.players.size);
+    const hpMul = 1 + 0.65 * (count - 1);
+    const dmgMul = 1 + 0.2 * (count - 1);
+    const targetMax = Math.round(ENEMY_TYPES.boss.hp * hpMul);
+    const targetDamage = Math.round(ENEMY_TYPES.boss.damage * dmgMul);
+    if (boss.maxHp !== targetMax) {
+      const ratio = boss.hp / boss.maxHp;
+      boss.maxHp = targetMax;
+      boss.hp = boss.dormant ? targetMax : Math.max(1, Math.round(targetMax * ratio));
+    }
+    boss.damage = targetDamage;
+  }
+
+  /* ---------- действия и игровой цикл ---------- */
+
+  advanceStage(stage, toast = "") {
+    const current = this.quest.main.stage;
+    if (stage <= current) return false;
+    this.quest.main.stage = stage;
+    this.emit("quest", { stage });
+    this.emit("checkpoint", { stage, title: QUEST_MAIN.stages[stage] || "" });
+    if (toast) this.emit("toast", { text: toast });
+    return true;
+  }
+
   action(id, action, data = {}) {
     const p = this.players.get(id);
     if (!p) return;
@@ -267,11 +466,18 @@ export class World {
       this.endDialogue(p);
       return;
     }
+    if (action === "closeShop") {
+      p.shopOpen = false;
+      this.emit("shopClose", { id: p.id });
+      return;
+    }
     if (p.downed) return;
-    if (p.talking) return;
+    if (action === "buy") {
+      this.buyItem(p, data.id);
+      return;
+    }
+    if (p.talking || p.shopOpen) return;
     // Заслон от повторных action-сообщений (дребезг тача, дубли по сети).
-    // Кулдауны способностей и атак всё равно больше, здесь только защита
-    // от двух событий, пришедших в один кадр.
     const actionGap = { attack: 0.04, dodge: 0.05, ability: 0.06, interact: 0.12 }[action];
     if (actionGap) {
       if (!p.actionAt) p.actionAt = {};
@@ -288,8 +494,6 @@ export class World {
         this.cancelRevive(p);
         return;
       }
-      // Кулдаун взаимодействия живёт на входе в действие, чтобы прямой
-      // вызов tryInteract из тестов/скриптов оставался свободным.
       if ((p.interactCd || 0) > 0) return;
       p.interactCd = 0.55;
       this.tryInteract(p);
@@ -319,7 +523,7 @@ export class World {
         this.emit("whisper", { id: p.id, text: whisperText(p) });
       }
 
-      if (p.talking) {
+      if (p.talking || p.shopOpen) {
         p.input.mx = 0;
         p.input.my = 0;
         continue;
@@ -329,7 +533,6 @@ export class World {
         if (p.downTimer <= 0) this.respawn(p);
         continue;
       }
-
       if (p.channeling) {
         const target = this.players.get(p.reviveTargetId);
         if (!target || !target.downed || dist(p.x, p.y, target.x, target.y) > 70) {
@@ -343,14 +546,11 @@ export class World {
         }
         continue;
       }
-
       if (p.dodgeTimer > 0) {
         p.dodgeTimer -= dt;
-        const mult = 3.1;
-        this.map.moveEntity(p, p.dodgeDir.x * p.speed * mult * dt, p.dodgeDir.y * p.speed * mult * dt);
+        this.map.moveEntity(p, p.dodgeDir.x * p.speed * 3.1 * dt, p.dodgeDir.y * p.speed * 3.1 * dt);
         continue;
       }
-
       const mv = norm(p.input.mx, p.input.my);
       if (mv.x || mv.y) {
         this.map.moveEntity(p, mv.x * p.speed * dt, mv.y * p.speed * dt);
@@ -359,18 +559,127 @@ export class World {
       }
     }
 
-    // projectiles
     this.updateProjectiles(dt);
-    // enemies
     for (const e of [...this.enemies]) this.updateEnemy(e, dt);
-    // pickups
     this.updatePickups(dt);
-    // respawn queue
-    this.updateRespawns();
-    // cleanup old events
+    this.updateSpawning(dt);
+    this.updateDaughter(dt);
+
+    this.storyCheckTimer -= dt;
+    if (this.storyCheckTimer <= 0) {
+      this.storyCheckTimer = 0.25;
+      this.updateStory();
+    }
+    this.bossSyncTimer -= dt;
+    if (this.bossSyncTimer <= 0) {
+      this.bossSyncTimer = 1;
+      this.syncBossScaling();
+    }
+
     if (this.events.length > 0) {
       const cutoff = this.time - 4;
       while (this.events.length && this.events[0].time < cutoff) this.events.shift();
+    }
+  }
+
+  updateStory() {
+    if (this.quest.main.stage === 5 && this.daughter.state === "following") {
+      const daughterHome = this.map.inRegion("home", this.daughter.x, this.daughter.y);
+      let playerHome = false;
+      for (const p of this.players.values()) {
+        if (!p.downed && this.map.inRegion("home", p.x, p.y)) playerHome = true;
+      }
+      if (daughterHome && playerHome) {
+        this.daughter.state = "table";
+        this.daughter.visible = true;
+        this.flags.daughterState = "table";
+        const pos = DAUGHTER_POS.table;
+        this.daughter.x = pos.x;
+        this.daughter.y = pos.y;
+        this.advanceStage(6, "Дом принял её. Теперь накормите Лиру за столом.");
+      }
+    }
+    if (this.quest.main.stage >= 6 && this.quest.main.stage < 7 && this.daughter.state === "cage") {
+      this.daughter.state = "table";
+      this.flags.daughterState = "table";
+    }
+    if (this.quest.main.stage >= 8 && this.flags.ending && !this.daughterTuckedEmit) {
+      this.daughterTuckedEmit = true;
+    }
+  }
+
+  updateDaughter(dt) {
+    const d = this.daughter;
+    if (!d) return;
+    d.step += dt;
+    if (this.quest.main.stage === 0) {
+      d.state = "home";
+      d.x = DAUGHTER_POS.bed.x;
+      d.y = DAUGHTER_POS.bed.y;
+      d.visible = true;
+      this.flags.daughterState = "home";
+      return;
+    }
+    if (d.state === "cage") {
+      d.x = DAUGHTER_POS.cage.x;
+      d.y = DAUGHTER_POS.cage.y;
+      d.visible = this.quest.main.stage >= 4 || this.flags.bossDead;
+      this.flags.daughterState = "cage";
+      return;
+    }
+    if (d.state === "table") {
+      d.x = DAUGHTER_POS.table.x;
+      d.y = DAUGHTER_POS.table.y;
+      d.visible = true;
+      this.flags.daughterState = "table";
+      return;
+    }
+    if (d.state === "bed") {
+      d.x = DAUGHTER_POS.bed.x;
+      d.y = DAUGHTER_POS.bed.y;
+      d.visible = true;
+      this.flags.daughterState = "bed";
+      return;
+    }
+    if (d.state !== "following") return;
+    d.visible = true;
+    this.flags.daughterState = "following";
+    let owner = this.players.get(this.flags.rescuer);
+    if (!owner || owner.downed) owner = this.nearestPlayer(d.x, d.y, 1600, false);
+    if (!owner) return;
+    const distance = dist(d.x, d.y, owner.x, owner.y);
+    if (distance < 48) return;
+    const a = angleTo(d.x, d.y, owner.x, owner.y);
+    d.facing = a;
+    const speed = distance > 260 ? 160 : 104;
+    const step = Math.min(distance - 40, speed * dt);
+    if (step <= 0) return;
+    const moved = this.map.moveEntity(d, Math.cos(a) * step, Math.sin(a) * step);
+    if (!moved) {
+      for (const off of [0.7, -0.7, 1.4, -1.4]) {
+        if (this.map.moveEntity(d, Math.cos(a + off) * step, Math.sin(a + off) * step)) break;
+      }
+    }
+    if (dist(d.x, d.y, owner.x, owner.y) > 1000) {
+      d.x = owner.x;
+      d.y = owner.y;
+    }
+  }
+
+  /* ---------- Похититель ---------- */
+
+  checkBossAwake(boss) {
+    if (boss.active || this.quest.main.stage < 3) return;
+    for (const p of this.players.values()) {
+      if (p.downed) continue;
+      if (this.map.inRegion("bossArena", p.x, p.y) || dist(p.x, p.y, boss.x, boss.y) < 460) {
+        boss.active = true;
+        boss.dormant = false;
+        this.flags.bossActive = true;
+        this.flags.bossIntroSeen = true;
+        this.emit("bossIntro", { id: boss.id, x: boss.x, y: boss.y });
+        return;
+      }
     }
   }
 
@@ -386,9 +695,7 @@ export class World {
     e.hitFlash = Math.max(0, e.hitFlash - dt);
     e.stunTimer = Math.max(0, e.stunTimer - dt);
     e.slowTimer = Math.max(0, e.slowTimer - dt);
-    if (e.bleed > 0 && this.time % 0.5 < dt) {
-      this.damageEnemy(e, e.bleed, null, { silent: true });
-    }
+    if (e.bleed > 0 && this.time % 0.5 < dt) this.damageEnemy(e, e.bleed, null, { silent: true });
     if (e.stunTimer > 0) return;
 
     if (e.boss) {
@@ -397,9 +704,7 @@ export class World {
     }
 
     const target = this.nearestPlayer(e.x, e.y, e.ranged ? 420 : 360, !e.boss);
-    const def = ENEMY_TYPES[e.type];
     if (!target) {
-      // idle wander near spawn
       e.wanderTimer -= dt;
       if (e.wanderTimer <= 0) {
         e.wanderTimer = 2 + Math.random() * 3;
@@ -407,8 +712,7 @@ export class World {
         e.state = "idle";
       }
       if (e.state === "idle" && dist(e.x, e.y, e.spawnX, e.spawnY) < 90) {
-        const sp = 0.25;
-        this.enemyMove(e, Math.cos(e.wanderDir) * e.speed * sp * dt, Math.sin(e.wanderDir) * e.speed * sp * dt);
+        this.enemyMove(e, Math.cos(e.wanderDir) * e.speed * 0.25 * dt, Math.sin(e.wanderDir) * e.speed * 0.25 * dt);
       } else if (dist(e.x, e.y, e.spawnX, e.spawnY) > 90) {
         const d = angleTo(e.x, e.y, e.spawnX, e.spawnY);
         this.enemyMove(e, Math.cos(d) * e.speed * dt, Math.sin(d) * e.speed * dt);
@@ -427,10 +731,8 @@ export class World {
         this.enemyAttack(e, target);
         return;
       }
-      // small lunge for hounds
       if (e.type === "hound" && d > 18) {
-        const a = e.facing;
-        this.enemyMove(e, Math.cos(a) * e.speed * 1.8 * dt, Math.sin(a) * e.speed * 1.8 * dt);
+        this.enemyMove(e, Math.cos(e.facing) * e.speed * 1.8 * dt, Math.sin(e.facing) * e.speed * 1.8 * dt);
       }
       return;
     }
@@ -446,24 +748,97 @@ export class World {
     const speed = e.speed * (e.slowTimer > 0 ? 0.45 : 1);
     if (e.ranged) {
       if (d < 145) {
-        const a = e.facing + Math.PI;
-        this.enemyMove(e, Math.cos(a) * speed * dt, Math.sin(a) * speed * dt);
+        this.enemyMove(e, Math.cos(e.facing + Math.PI) * speed * dt, Math.sin(e.facing + Math.PI) * speed * dt);
       } else if (d > 245) {
-        const a = e.facing;
-        this.enemyMove(e, Math.cos(a) * speed * dt, Math.sin(a) * speed * dt);
+        this.enemyMove(e, Math.cos(e.facing) * speed * dt, Math.sin(e.facing) * speed * dt);
       } else {
-        // strafe
-        const a = e.facing + Math.PI / 2;
-        e.wanderDir = a;
-        this.enemyMove(e, Math.cos(a) * speed * 0.5 * dt, Math.sin(a) * speed * 0.5 * dt);
+        this.enemyMove(e, Math.cos(e.facing + Math.PI / 2) * speed * 0.5 * dt, Math.sin(e.facing + Math.PI / 2) * speed * 0.5 * dt);
       }
-    } else {
-      if (d > Math.max(10, e.attackRange - 6)) {
-        const a = e.facing;
-        this.enemyMove(e, Math.cos(a) * speed * dt, Math.sin(a) * speed * dt);
-      }
+    } else if (d > Math.max(10, e.attackRange - 6)) {
+      this.enemyMove(e, Math.cos(e.facing) * speed * dt, Math.sin(e.facing) * speed * dt);
     }
     e.state = "chase";
+  }
+
+  updateBoss(boss, dt) {
+    boss.cooldown = Math.max(0, boss.cooldown - dt);
+    boss.specialTimer -= dt;
+    boss.hitFlash = Math.max(0, boss.hitFlash - dt);
+    const wasWindingUp = boss.windup > 0;
+    boss.windup = Math.max(0, boss.windup - dt);
+    const target = this.nearestPlayer(boss.x, boss.y, 900, false);
+    if (!target) return;
+    boss.facing = angleTo(boss.x, boss.y, target.x, target.y);
+    const d = dist(boss.x, boss.y, target.x, target.y);
+
+    if (boss.hp <= boss.maxHp * 0.6 && boss.phase === 1) {
+      boss.phase = 2;
+      this.emit("bossPhase", { phase: 2 });
+    }
+    if (boss.hp <= boss.maxHp * 0.3 && boss.phase === 2) {
+      boss.phase = 3;
+      this.emit("bossPhase", { phase: 3 });
+    }
+
+    if (wasWindingUp) {
+      boss.state = "windup";
+      if (boss.windup <= 0) {
+        const radius = 130;
+        for (const p of this.players.values()) {
+          if (!p.downed && !p.talking && dist(boss.x, boss.y, p.x, p.y) < radius + p.radius) {
+            this.damagePlayer(p, Math.round(boss.damage * 0.9 + (boss.phase - 1) * 3), boss);
+          }
+        }
+        this.emit("bossSlam", { x: boss.x, y: boss.y, radius });
+      }
+      return;
+    }
+
+    if (boss.specialTimer <= 0) {
+      boss.specialTimer = boss.phase === 3 ? 3.3 : boss.phase === 2 ? 4.2 : 5;
+      const count = boss.phase === 3 ? 16 : boss.phase === 2 ? 12 : 8;
+      const offset = Math.random() * Math.PI * 2;
+      for (let i = 0; i < count; i++) {
+        const a = offset + (i / count) * Math.PI * 2;
+        this.spawnProjectile({
+          x: boss.x,
+          y: boss.y,
+          vx: Math.cos(a) * 130,
+          vy: Math.sin(a) * 130,
+          damage: Math.round(boss.damage * 0.45),
+          team: "enemy",
+          owner: boss.id,
+          type: "tear",
+          radius: 6,
+          ttl: 3.8,
+        });
+      }
+      this.emit("bossTears", { x: boss.x, y: boss.y, count });
+      if (boss.phase >= 2) {
+        const adds = boss.phase === 3 ? 3 : 2;
+        for (let i = 0; i < adds; i++) {
+          const a = Math.random() * Math.PI * 2;
+          this.spawnEnemy("hollow", boss.x + Math.cos(a) * 90, boss.y + Math.sin(a) * 90, { force: true });
+        }
+        this.emit("bossSummon", { count: adds });
+      }
+    }
+
+    if (boss.cooldown <= 0 && d < 150) {
+      boss.cooldown = 2.8;
+      boss.windup = 0.8;
+      boss.state = "windup";
+      this.emit("enemyWindup", { id: boss.id, x: boss.x, y: boss.y, time: 0.8, type: "boss" });
+      return;
+    }
+
+    if (d > 86) {
+      const speed = boss.speed * (boss.phase === 3 ? 1.35 : 1);
+      this.enemyMove(boss, Math.cos(boss.facing) * speed * dt, Math.sin(boss.facing) * speed * dt);
+      boss.state = "chase";
+    } else {
+      boss.state = "idle";
+    }
   }
 
   enemyMove(e, dx, dy) {
@@ -475,7 +850,6 @@ export class World {
         if (this.map.moveEntity(e, Math.cos(a) * Math.hypot(dx, dy), Math.sin(a) * Math.hypot(dx, dy))) return;
       }
     }
-    // soft separation
     for (const other of this.enemies) {
       if (other === e || other.hp <= 0) continue;
       const dd = dist(e.x, e.y, other.x, other.y);
@@ -516,101 +890,6 @@ export class World {
     }
   }
 
-  checkBossAwake(boss) {
-    for (const p of this.players.values()) {
-      if (p.downed) continue;
-      if (p.x > 35 * TILE && p.x < 53 * TILE && p.y > 5 * TILE && p.y < 17.5 * TILE) {
-        boss.active = true;
-        boss.dormant = false;
-        this.flags.bossActive = true;
-        this.emit("bossIntro", { id: boss.id });
-        return;
-      }
-    }
-  }
-
-  updateBoss(boss, dt) {
-    boss.cooldown = Math.max(0, boss.cooldown - dt);
-    boss.specialTimer -= dt;
-    boss.hitFlash = Math.max(0, boss.hitFlash - dt);
-    const wasWindingUp = boss.windup > 0;
-    boss.windup = Math.max(0, boss.windup - dt);
-    const target = this.nearestPlayer(boss.x, boss.y, 900, false);
-    if (!target) return;
-    boss.facing = angleTo(boss.x, boss.y, target.x, target.y);
-    const d = dist(boss.x, boss.y, target.x, target.y);
-
-    if (boss.hp <= boss.maxHp * 0.6 && boss.phase === 1) {
-      boss.phase = 2;
-      this.emit("bossPhase", { phase: 2 });
-    }
-    if (boss.hp <= boss.maxHp * 0.3 && boss.phase === 2) {
-      boss.phase = 3;
-      this.emit("bossPhase", { phase: 3 });
-    }
-
-    if (wasWindingUp) {
-      boss.state = "windup";
-      if (boss.windup <= 0) {
-        // slam around boss
-        const radius = 130;
-        for (const p of this.players.values()) {
-          if (!p.downed && !p.talking && dist(boss.x, boss.y, p.x, p.y) < radius + p.radius) {
-            this.damagePlayer(p, 18 + (boss.phase - 1) * 4, boss);
-          }
-        }
-        this.emit("bossSlam", { x: boss.x, y: boss.y, radius });
-      }
-      return;
-    }
-
-    if (boss.specialTimer <= 0) {
-      boss.specialTimer = boss.phase === 3 ? 3.3 : boss.phase === 2 ? 4.2 : 5;
-      const count = boss.phase === 3 ? 16 : boss.phase === 2 ? 12 : 8;
-      const offset = Math.random() * Math.PI * 2;
-      for (let i = 0; i < count; i++) {
-        const a = offset + (i / count) * Math.PI * 2;
-        this.spawnProjectile({
-          x: boss.x,
-          y: boss.y,
-          vx: Math.cos(a) * 130,
-          vy: Math.sin(a) * 130,
-          damage: 9,
-          team: "enemy",
-          owner: boss.id,
-          type: "tear",
-          radius: 6,
-          ttl: 3.8,
-        });
-      }
-      this.emit("bossTears", { x: boss.x, y: boss.y, count });
-      if (boss.phase >= 2) {
-        const adds = boss.phase === 3 ? 3 : 2;
-        for (let i = 0; i < adds; i++) {
-          const a = Math.random() * Math.PI * 2;
-          this.spawnEnemy("hollow", boss.x + Math.cos(a) * 90, boss.y + Math.sin(a) * 90, {});
-        }
-        this.emit("bossSummon", { count: adds });
-      }
-    }
-
-    if (boss.cooldown <= 0 && d < 150) {
-      boss.cooldown = 2.8;
-      boss.windup = 0.8;
-      boss.state = "windup";
-      this.emit("enemyWindup", { id: boss.id, x: boss.x, y: boss.y, time: 0.8, type: "boss" });
-      return;
-    }
-
-    if (d > 86) {
-      const speed = boss.speed * (boss.phase === 3 ? 1.35 : 1);
-      this.enemyMove(boss, Math.cos(boss.facing) * speed * dt, Math.sin(boss.facing) * speed * dt);
-      boss.state = "chase";
-    } else {
-      boss.state = "idle";
-    }
-  }
-
   nearestPlayer(x, y, maxDist = 500, ignoreTalking = true) {
     let best = null;
     let bestD = maxDist * maxDist;
@@ -626,8 +905,15 @@ export class World {
     return best;
   }
 
+  /* ---------- бой и способности ---------- */
+
+  weaponDamage(p) {
+    const item = SHOP_ITEMS[p.equipment?.weapon];
+    return item?.damage || 0;
+  }
+
   tryAttack(p) {
-    if (p.cooldown > 0 || p.downed || p.talking || p.channeling) return;
+    if (p.cooldown > 0 || p.downed || p.talking || p.channeling || p.shopOpen) return;
     const def = CLASSES[p.cls];
     const w = p.weapon || {};
     const aimMul = 1 + 0.1 * (w.aim || 0);
@@ -635,7 +921,7 @@ export class World {
     if (target) p.facing = angleTo(p.x, p.y, target.x, target.y);
     p.cooldown = def.cooldown * Math.max(0.6, 1 - 0.08 * (w.speed || 0));
     p.attackAnim = 0.22;
-    const dmg = Math.round(def.damage * (1 + 0.12 * (w.damage || 0))) + (p.level - 1) * 2 + p.bonusDamage;
+    const dmg = Math.round(def.damage * (1 + 0.12 * (w.damage || 0))) + (p.level - 1) * 2 + p.bonusDamage + this.weaponDamage(p);
 
     if (def.ranged) {
       const a = p.facing;
@@ -659,7 +945,7 @@ export class World {
     let hit = 0;
     const meleeRange = def.range * aimMul;
     for (const e of this.enemies) {
-      if (e.hp <= 0) continue;
+      if (e.hp <= 0 || e.dormant) continue;
       const d = dist(p.x, p.y, e.x, e.y);
       if (d > meleeRange + e.radius) continue;
       const a = angleTo(p.x, p.y, e.x, e.y);
@@ -673,7 +959,7 @@ export class World {
   tryAbility(p) {
     const def = CLASSES[p.cls];
     const ab = def.ability;
-    if (p.downed || p.talking || p.channeling) return;
+    if (p.downed || p.talking || p.channeling || p.shopOpen) return;
     if (p.abilityCd > 0) return;
     if (p.memory < ab.cost) {
       this.emit("memoryFail", { id: p.id, text: "Слишком мало Памяти." });
@@ -685,13 +971,14 @@ export class World {
     p.abilityCd = ab.cd * Math.max(0.64, 1 - 0.06 * (w.resonance || 0));
     const target = this.nearestEnemy(p.x, p.y, ab.radius + 180);
     if (target) p.facing = angleTo(p.x, p.y, target.x, target.y);
+    const gear = Math.round(this.weaponDamage(p) * 0.6);
 
     if (ab.id === "nova") {
       let hit = 0;
       for (const e of this.enemies) {
-        if (e.hp <= 0) continue;
+        if (e.hp <= 0 || e.dormant) continue;
         if (dist(p.x, p.y, e.x, e.y) <= ab.radius + e.radius) {
-          this.damageEnemy(e, Math.round(ab.damage * abilityMul) + (p.level - 1) * 2, p);
+          this.damageEnemy(e, Math.round(ab.damage * abilityMul) + (p.level - 1) * 2 + gear, p);
           e.stunTimer = Math.max(e.stunTimer, ab.stun);
           hit++;
         }
@@ -704,7 +991,7 @@ export class World {
         y: origin.y,
         vx: Math.cos(p.facing) * ab.speed,
         vy: Math.sin(p.facing) * ab.speed,
-        damage: Math.round(ab.damage * abilityMul) + (p.level - 1) * 2,
+        damage: Math.round(ab.damage * abilityMul) + (p.level - 1) * 2 + gear,
         team: "player",
         owner: p.id,
         type: "pierce",
@@ -718,12 +1005,12 @@ export class World {
     } else if (ab.id === "cone") {
       let hit = 0;
       for (const e of this.enemies) {
-        if (e.hp <= 0) continue;
+        if (e.hp <= 0 || e.dormant) continue;
         const d = dist(p.x, p.y, e.x, e.y);
         if (d > ab.radius + e.radius) continue;
         const a = angleTo(p.x, p.y, e.x, e.y);
         if (Math.abs(angleDiff(a, p.facing)) > ab.angle / 2) continue;
-        this.damageEnemy(e, Math.round(ab.damage * abilityMul) + (p.level - 1) * 2, p);
+        this.damageEnemy(e, Math.round(ab.damage * abilityMul) + (p.level - 1) * 2 + gear, p);
         e.bleed = Math.max(e.bleed, ab.bleed);
         hit++;
       }
@@ -733,7 +1020,7 @@ export class World {
   }
 
   tryDodge(p) {
-    if (p.dodgeCd > 0 || p.downed || p.talking || p.channeling) return;
+    if (p.dodgeCd > 0 || p.downed || p.talking || p.channeling || p.shopOpen) return;
     const def = CLASSES[p.cls];
     let dir = norm(p.input.mx, p.input.my);
     if (!dir.x && !dir.y) dir = { x: Math.cos(p.facing), y: Math.sin(p.facing) };
@@ -744,9 +1031,10 @@ export class World {
     this.emit("dodge", { x: p.x, y: p.y, a: Math.atan2(dir.y, dir.x) });
   }
 
+  /* ---------- взаимодействие ---------- */
+
   tryInteract(p) {
-    if (p.downed || p.talking || p.channeling) return;
-    // revive fallen ally
+    if (p.downed || p.talking || p.channeling || p.shopOpen) return;
     let downed = null;
     let bestD = 60 * 60;
     for (const other of this.players.values()) {
@@ -768,7 +1056,7 @@ export class World {
     }
 
     let best = null;
-    let bestDist = 58;
+    let bestDist = 66;
     for (const npc of this.npcs) {
       if (!npc.alive) continue;
       const d = dist(p.x, p.y, npc.x, npc.y);
@@ -780,8 +1068,9 @@ export class World {
     for (const prop of this.map.props) {
       if (!prop.interact) continue;
       if (prop.interact.kind === "herb" && this.flags.herbCollected[prop.id]) continue;
+      const reach = 60 + Math.min(34, (prop.r || Math.max(prop.w || 0, prop.h || 0) * 0.5) * 0.5);
       const d = dist(p.x, p.y, prop.x, prop.y);
-      if (d < bestDist + (prop.r || 8) * 0.35) {
+      if (d < reach && d < bestDist + 8) {
         bestDist = d;
         best = { kind: "prop", prop };
       }
@@ -807,8 +1096,8 @@ export class World {
         this.flags.herbs = Math.min(3, (this.flags.herbs || 0) + 1);
         this.emit("herb", { id: p.id, x: prop.x, y: prop.y, count: this.flags.herbs });
         this.emit("toast", { text: `Трава собрана. ${this.flags.herbs}/3.` });
-        if (this.flags.herbs >= 3) {
-          if (this.quest.side.herbs < 3) this.quest.side.herbs = Math.max(this.quest.side.herbs, 2);
+        if (this.flags.herbs >= 3 && this.quest.side.herbs < 3) {
+          this.quest.side.herbs = Math.max(this.quest.side.herbs, 2);
           this.emit("quest", {});
           this.emit("toast", { text: "Все три травы у тебя. Мила ждёт в Соляной топи." });
         }
@@ -820,78 +1109,98 @@ export class World {
         this.flags.beacons = Math.min(3, (this.flags.beacons || 0) + 1);
         this.emit("beacon", { id: p.id, x: prop.x, y: prop.y, count: this.flags.beacons, key });
         this.emit("toast", { text: `Сигнальный огонь горит. ${this.flags.beacons}/3.` });
-        if (this.flags.beacons >= 3) {
-          if (this.quest.side.beacons < 3) this.quest.side.beacons = Math.max(this.quest.side.beacons, 2);
+        if (this.flags.beacons >= 3 && this.quest.side.beacons < 3) {
+          this.quest.side.beacons = Math.max(this.quest.side.beacons, 2);
           this.emit("quest", {});
           this.emit("toast", { text: "Три дыма поднялись над Морном. Гарм ждёт у перевоза." });
         }
       } else {
         this.emit("toast", { text: "Этот огонь уже горит." });
       }
+    } else if (inter.kind === "clue") {
+      this.collectClue(p, inter.key);
     } else if (inter.kind === "dialogue") {
       let node = "intro";
       if (inter.script === "nameTree" && this.flags.nameChoice) node = "done";
       this.startDialogue(p, inter.script, node);
-    } else if (inter.kind === "door") {
-      const node = this.flags.chapelOpen ? "open" : this.flags.riteReady ? "rite" : "locked";
-      this.startDialogue(p, "chapelDoor", node);
-    } else if (inter.kind === "shrine") {
-      if (!this.flags.shrineBlessed) {
-        this.flags.shrineBlessed = true;
-        p.memory = Math.min(p.maxMemory, p.memory + 12);
-        this.emit("toast", { text: "Южный алтарь помнит тех, кто ушёл. Память +12." });
-      } else {
-        this.emit("toast", { text: "Алтарь молчит. Только вода и камень." });
-      }
+    } else if (inter.kind === "bed") {
+      const stage = this.quest.main.stage;
+      if (stage === 0) this.startDialogue(p, "daughter", "intro");
+      else if (stage >= 8) this.startDialogue(p, "daughter", "after");
+      else if (stage >= 7) this.startDialogue(p, "tuck", "intro");
+      else this.emit("toast", { text: "Постель пуста. Одеяло ещё хранит тепло." });
+    } else if (inter.kind === "table") {
+      if (this.quest.main.stage === 6) this.startDialogue(p, "feed", "intro");
+      else if (this.quest.main.stage >= 7) this.emit("toast", { text: "Суп остыл. Лира уже наверху." });
+      else this.emit("toast", { text: "На столе — пустая чашка и хлебные крошки." });
+    } else if (inter.kind === "cage") {
+      if (this.flags.bossDead && this.quest.main.stage === 4) this.startDialogue(p, "cage", "intro");
+      else if (this.flags.bossDead) this.emit("toast", { text: "Клетка пуста. Замок сломан." });
+      else this.startDialogue(p, "cage", "locked");
+    }
+  }
+
+  collectClue(p, key) {
+    if (!key || !(key in this.flags.clues)) return;
+    if (this.quest.main.stage !== 1) {
+      this.emit("toast", { text: this.quest.main.stage < 1 ? "Сначала что-то должно случиться." : "След уже прочитан." });
+      return;
+    }
+    if (this.flags.clues[key]) {
+      this.emit("toast", { text: "След уже прочитан." });
+      return;
+    }
+    this.flags.clues[key] = true;
+    this.flags.cluesFound = Object.values(this.flags.clues).filter(Boolean).length;
+    const labels = { lantern: "Фонарь у крыльца", ribbon: "Серая лента у лавки", tracks: "Колея на северной дороге" };
+    this.emit("clue", { id: p.id, key, count: this.flags.cluesFound, x: 0, y: 0 });
+    this.emit("toast", { text: `${labels[key] || "След"}. Найдено ${this.flags.cluesFound}/3.` });
+    if (this.flags.cluesFound >= 3) {
+      this.advanceStage(2, "Три следа сходятся к Вересковой мельнице на западе.");
     }
   }
 
   getNpcNode(npc, p) {
+    const stage = this.quest.main.stage;
     if (npc.dialogue === "irma") {
       if (this.flags.ending) return "done";
-      if (this.quest.side.hunter === 2) return "hunterMessage";
-      const stage = this.quest.main.stage;
       if (stage === 0) return "intro";
-      if (stage === 1) return this.flags.embers >= 3 ? "return" : "wait";
-      if (stage === 2) return this.flags.riteStarted ? "riteWait" : "return";
-      if (stage === 3) return "chapelOpen";
-      if (stage === 4) return "heartWait";
-      if (stage === 5) return "afterBoss";
+      if (stage === 1) return "clues";
+      if (stage === 2) return "mill";
+      if (stage === 3) return "cave";
+      if (stage === 4) return "rescued";
+      if (stage < 8) return "home";
       return "done";
     }
-    if (npc.dialogue === "hunter") {
-      if (this.quest.side.hunter >= 2) return "done";
-      return "intro";
-    }
-    if (npc.dialogue === "nameTree") {
-      return this.flags.nameChoice ? "done" : "intro";
-    }
-    if (npc.dialogue === "merchant") {
-      return this.flags.merchantTrade ? "done" : "intro";
-    }
+    if (npc.dialogue === "hunter") return this.quest.side.hunter >= 2 ? "done" : "intro";
+    if (npc.dialogue === "nameTree") return this.flags.nameChoice ? "done" : "intro";
+    if (npc.dialogue === "merchant") return "intro";
     if (npc.dialogue === "mila") {
-      if (this.flags.riteStarted && !this.flags.riteNames?.mila) return "rite";
       if (this.quest.side.herbs >= 3) return "done";
       if (this.flags.herbs >= 3) return "reward";
       return this.quest.side.herbs >= 2 ? "wait" : "intro";
     }
     if (npc.dialogue === "garm") {
-      if (this.flags.riteStarted && !this.flags.riteNames?.garm) return "rite";
       if (this.quest.side.beacons >= 3) return "done";
       if (this.flags.beacons >= 3) return "reward";
       return this.quest.side.beacons >= 2 ? "wait" : "intro";
     }
     if (npc.dialogue === "ada") {
-      if (this.flags.riteStarted && !this.flags.riteNames?.ada) return "rite";
       if (this.quest.side.barrows >= 3) return "done";
       if (this.flags.barrows >= 3) return "reward";
       return this.quest.side.barrows >= 2 ? "wait" : "intro";
     }
-    if (npc.dialogue === "hermit") {
-      return this.flags.truthKnown ? "done" : "intro";
+    if (npc.dialogue === "hermit") return this.flags.truthKnown ? "done" : "intro";
+    if (npc.dialogue === "miller") {
+      if (stage === 2) return "daughter";
+      if (stage >= 3) return "done";
+      if (this.flags.millStory) return "done";
+      return "intro";
     }
     return "intro";
   }
+
+  /* ---------- диалоги ---------- */
 
   startDialogue(p, scriptId, nodeId) {
     const script = DIALOGUES[scriptId];
@@ -916,7 +1225,7 @@ export class World {
     p.dialogueView = {
       scriptId: d.scriptId,
       nodeId: d.nodeId,
-      speaker: script.speaker,
+      speaker: node.speaker || script.speaker,
       text: node.text,
       choices: (node.choices || []).map((c) => ({ label: c.label })),
       canClose: !node.choices || node.choices.length === 0,
@@ -931,7 +1240,7 @@ export class World {
     const choice = node.choices?.[index];
     if (!choice) return;
     const override = choice.action ? this.applyDialogueAction(p, choice.action, choice) : null;
-    let next = typeof override === "string" ? override : choice.next || node.next || null;
+    const next = typeof override === "string" ? override : choice.next || node.next || null;
     if (choice.end || !next) {
       this.endDialogue(p);
       return;
@@ -954,34 +1263,89 @@ export class World {
     this.emit("dialogueEnd", { id: p.id });
   }
 
+  /* ---------- сюжетные действия ---------- */
+
   applyDialogueAction(p, action, choice) {
     switch (action) {
-      case "startMain": {
+      case "kidnap": {
         if (this.quest.main.stage === 0) {
-          this.quest.main.stage = this.flags.embers >= 3 ? 2 : 1;
-          this.emit("quest", {});
+          this.flags.kidnapDone = true;
+          this.daughter.state = "cage";
+          this.daughter.visible = false;
+          this.flags.daughterState = "cage";
+          this.advanceStage(1, "Лира пропала. Начните с трёх следов: у дома, у лавки и на северной дороге.");
+          this.emit("kidnap", { x: DAUGHTER_POS.bed.x, y: DAUGHTER_POS.bed.y });
         }
         return null;
       }
-      case "giveEmberHunter": {
-        this.addEmber("loyalty", p);
-        this.quest.side.hunter = 2;
-        this.emit("toast", { text: "Уголёк Верности согревает ладонь." });
+      case "rescueDaughter": {
+        if (this.quest.main.stage === 4 && this.flags.bossDead) {
+          this.flags.rescuer = p.id;
+          this.daughter.state = "following";
+          this.daughter.visible = true;
+          this.flags.daughterState = "following";
+          const pos = DAUGHTER_POS.cage;
+          this.daughter.x = pos.x + TILE * 1.4;
+          this.daughter.y = pos.y;
+          this.advanceStage(5, "Лира идёт за тобой. Отведи её домой.");
+          this.emit("daughterRescued", { id: p.id, x: this.daughter.x, y: this.daughter.y });
+        }
         return null;
       }
-      case "deliverHunterMessage": {
-        this.quest.side.hunter = 3;
-        p.memory = Math.min(p.maxMemory, p.memory + 10);
-        this.emit("toast", { text: "Ирма запомнит его имя. Память +10." });
+      case "feedDaughter": {
+        if (this.quest.main.stage === 6) {
+          this.daughter.state = "bed";
+          this.flags.daughterState = "bed";
+          const pos = DAUGHTER_POS.bed;
+          this.daughter.x = pos.x;
+          this.daughter.y = pos.y;
+          this.advanceStage(7, "Лира сыта. Отнесите её наверх и укройте одеялом.");
+          this.emit("daughterFed", { id: p.id });
+        }
+        return null;
+      }
+      case "tuckIn": {
+        if (this.quest.main.stage === 7) {
+          this.flags.daughterTucked = true;
+          this.daughter.state = "bed";
+          this.daughter.visible = true;
+          this.advanceStage(8, "Лира спит. Осталось погасить свечу.");
+          this.emit("daughterAsleep", { x: this.daughter.x, y: this.daughter.y });
+        }
+        return null;
+      }
+      case "finishStory": {
+        if (this.quest.main.stage >= 8 && !this.flags.ending) {
+          const ending = this.players.size > 1 ? "brothers" : "home";
+          this.flags.ending = ending;
+          this.flags.pendingEnding = ending;
+          this.emit("ending", { ending });
+        }
+        return null;
+      }
+      case "openShop": {
+        p.shopOpen = true;
+        this.emit("shop", { id: p.id, ...this.shopPayload(p) });
+        return null;
+      }
+      case "hunterReward": {
+        if (this.quest.side.hunter < 2) {
+          this.quest.side.hunter = 3;
+          this.grantCoins(p, 45, "Лук охотника");
+          this.grantWeapon(p, "hunter_bow");
+          this.emit("quest", {});
+          this.emit("toast", { text: "Охотник отдал вересковый лук и 45 монет." });
+        }
         return null;
       }
       case "nameTake": {
         if (!this.flags.nameChoice) {
           this.flags.nameChoice = "take";
           this.quest.side.name = 3;
-          this.addEmber("memory", p);
           p.memory = Math.min(p.maxMemory, p.memory + 25);
-          this.emit("toast", { text: "Чужое имя согревает. Память +25." });
+          this.grantCoins(p, 55, "Чужое имя");
+          this.emit("quest", {});
+          this.emit("toast", { text: "Чужое имя согревает. Память +25, монеты +55." });
         }
         return null;
       }
@@ -989,22 +1353,13 @@ export class World {
         if (!this.flags.nameChoice) {
           this.flags.nameChoice = "return";
           this.quest.side.name = 3;
-          this.addEmber("memory", p);
-          p.memory = Math.max(0, p.memory - 15);
           p.maxHp += 10;
-          p.hp += 10;
-          this.emit("toast", { text: "Имя вернулось в мир. Максимум здоровья +10." });
+          p.hp = Math.min(p.maxHp, p.hp + 10);
+          p.memory = Math.max(0, p.memory - 15);
+          this.grantCoins(p, 70, "Возвращённое имя");
+          this.emit("quest", {});
+          this.emit("toast", { text: "Имя вернулось в мир. Здоровье +10, монеты +70." });
         }
-        return null;
-      }
-      case "tradeMemory": {
-        if (p.memory < 20) return "poor";
-        p.memory -= 20;
-        p.maxHp += 15;
-        p.hp = Math.min(p.maxHp, p.hp + 15);
-        this.flags.merchantTrade = true;
-        this.quest.side.merchant = 2;
-        this.emit("toast", { text: "Соляной оберег согревает грудь. Максимум здоровья +15." });
         return null;
       }
       case "acceptHerbs": {
@@ -1018,13 +1373,13 @@ export class World {
       case "herbReward": {
         if (this.flags.herbs >= 3 && this.quest.side.herbs < 3) {
           this.quest.side.herbs = 3;
-          p.shards += 8;
           p.maxHp += 12;
           p.hp = Math.min(p.maxHp, p.hp + 12);
           p.memory = Math.min(p.maxMemory, p.memory + 20);
-          this.emit("shards", { id: p.id, x: p.x, y: p.y - 20, amount: 8 });
+          this.flags.salt = true;
+          this.grantCoins(p, 60, "Соль Милы");
           this.emit("quest", {});
-          this.emit("toast", { text: "Соль Милы. Максимум здоровья +12, осколки +8." });
+          this.emit("toast", { text: "Соль Милы. Здоровье +12, Память +20, монеты +60." });
         }
         return null;
       }
@@ -1039,12 +1394,11 @@ export class World {
       case "beaconReward": {
         if (this.flags.beacons >= 3 && this.quest.side.beacons < 3) {
           this.quest.side.beacons = 3;
-          p.shards += 12;
           p.maxMemory += 8;
           p.memory = Math.min(p.maxMemory, p.memory + 16);
-          this.emit("shards", { id: p.id, x: p.x, y: p.y - 20, amount: 12 });
+          this.grantCoins(p, 90, "Плата Гарма");
           this.emit("quest", {});
-          this.emit("toast", { text: "Плата Гарма. Максимум памяти +8, осколки +12." });
+          this.emit("toast", { text: "Плата Гарма. Память +8, монеты +90." });
         }
         return null;
       }
@@ -1059,97 +1413,45 @@ export class World {
       case "barrowReward": {
         if (this.flags.barrows >= 3 && this.quest.side.barrows < 3) {
           this.quest.side.barrows = 3;
-          p.shards += 10;
           p.maxHp += 10;
           p.hp = Math.min(p.maxHp, p.hp + 10);
-          this.emit("shards", { id: p.id, x: p.x, y: p.y - 20, amount: 10 });
+          this.grantCoins(p, 75, "Монеты с курганов");
           this.emit("quest", {});
-          this.emit("toast", { text: "Дар Ады. Максимум здоровья +10, осколки +10." });
+          this.emit("toast", { text: "Дар Ады. Здоровье +10, монеты +75." });
         }
         return null;
       }
       case "learnTruth": {
         if (!this.flags.truthKnown) {
           this.flags.truthKnown = true;
+          this.flags.salt = true;
           this.quest.side.truth = 2;
           p.maxMemory += 10;
           p.memory = Math.min(p.maxMemory, p.memory + 20);
           this.emit("quest", {});
-          this.emit("toast", { text: "Ты узнал, из чего слеплен огонь. Третий путь открыт." });
+          this.emit("toast", { text: "Соль Каля с тобой. Память +10." });
         }
         return null;
       }
       case "millStory": {
         if (!this.flags.millStory) {
           this.flags.millStory = true;
+          this.quest.side.mill = 2;
           p.memory = Math.min(p.maxMemory, p.memory + 8);
+          this.emit("quest", {});
           this.emit("toast", { text: "Жернова помнят имена. Память +8." });
         }
         return null;
       }
-      case "endingTruth": {
-        if (!this.flags.truthKnown) return "noTruth";
-        this.flags.pendingEnding = "truth";
-        return null;
-      }
-      case "startRite": {
-        if (!this.flags.riteStarted) {
-          this.flags.riteStarted = true;
-          this.emit("quest", {});
-          this.emit("toast", { text: "Имена ждут в Соляной топи, у перевоза и в курганах." });
+      case "millClue": {
+        if (!this.flags.millClue) {
+          this.flags.millClue = true;
+          if (this.quest.main.stage === 2) {
+            this.advanceStage(3, "Мельник указал на Серые скалы. Похититель ждёт внутри.");
+          } else {
+            this.emit("toast", { text: "Серые скалы. Вход чёрный, как зрачок." });
+          }
         }
-        return null;
-      }
-      case "riteName": {
-        const source = p.dialogue?.scriptId;
-        const names = { mila: "Ильга", garm: "Орен", ada: "Ивар" };
-        if (!names[source] || !this.flags.riteStarted || this.flags.riteNames?.[source]) return null;
-        this.flags.riteNames[source] = true;
-        const count = Object.values(this.flags.riteNames).filter(Boolean).length;
-        p.memory = Math.min(p.maxMemory, p.memory + 8);
-        this.emit("riteName", { id: p.id, x: p.x, y: p.y - 20, name: names[source], count });
-        if (count >= 3) {
-          this.flags.riteReady = true;
-          this.emit("toast", { text: "Ильга. Орен. Ивар. Три имени собраны. Вернись к двери часовни и назови их." });
-          this.emit("quest", {});
-        } else {
-          this.emit("toast", { text: `Имя ${names[source]} сохранено. Имён: ${count}/3.` });
-          this.emit("quest", {});
-        }
-        return null;
-      }
-      case "openChapelRite": {
-        if (!this.flags.riteReady || this.flags.chapelOpen) return null;
-        this.flags.chapelOpen = true;
-        this.map.setChapelOpen(true);
-        this.quest.main.stage = Math.max(this.quest.main.stage, 3);
-        this.emit("riteOpen", { x: 44 * 32, y: 17 * 32 });
-        this.emit("toast", { text: "Дверь часовни открылась. Плакальщик ждёт внутри." });
-        this.emit("quest", {});
-        return "open";
-      }
-      case "openChapel": {
-        if (this.flags.embers >= 3 && !this.flags.chapelOpen) {
-          this.flags.chapelOpen = true;
-          this.map.setChapelOpen(true);
-          this.quest.main.stage = 3;
-          this.emit("quest", {});
-          this.emit("toast", { text: "Дверь часовни открыта. Плакальщик ждёт." });
-        }
-        return null;
-      }
-      case "endingHope": {
-        this.flags.pendingEnding = "hope";
-        return null;
-      }
-      case "endingPower": {
-        this.flags.pendingEnding = "power";
-        return null;
-      }
-      case "finishMain": {
-        this.flags.ending = this.flags.pendingEnding || "hope";
-        this.quest.main.stage = 6;
-        this.emit("ending", { ending: this.flags.ending });
         return null;
       }
       case "rest": {
@@ -1161,18 +1463,94 @@ export class World {
     }
   }
 
-  addEmber(kind, p) {
-    if (!kind || this.flags.emberKinds[kind]) return false;
-    this.flags.emberKinds[kind] = true;
-    this.flags.embers = Math.min(3, this.flags.embers + 1);
-    this.emit("ember", { kind, count: this.flags.embers, id: p?.id });
-    if (this.flags.embers >= 3 && this.quest.main.stage === 1) {
-      this.quest.main.stage = 2;
-      this.emit("quest", {});
-      this.emit("toast", { text: "Все три уголька собраны. Вернись к Ирме." });
+  /* ---------- лавка и снаряжение ---------- */
+
+  shopPayload(p) {
+    const currentWeapon = SHOP_ITEMS[p.equipment?.weapon];
+    const currentArmor = SHOP_ITEMS[p.equipment?.armor];
+    return {
+      coins: p.coins || 0,
+      equipment: { ...(p.equipment || {}) },
+      items: Object.values(SHOP_ITEMS).map((item) => {
+        const current = item.kind === "weapon" ? currentWeapon : currentArmor;
+        const equipped = p.equipment?.[item.kind] === item.id;
+        const better = item.kind === "weapon"
+          ? !current || item.damage > current.damage
+          : !current || item.maxHp > current.maxHp;
+        return {
+          id: item.id,
+          kind: item.kind,
+          name: item.name,
+          desc: item.desc,
+          price: item.price,
+          glyph: item.glyph,
+          damage: item.damage || 0,
+          maxHp: item.maxHp || 0,
+          reduce: item.reduce || 0,
+          equipped,
+          better,
+          affordable: (p.coins || 0) >= item.price,
+        };
+      }),
+    };
+  }
+
+  buyItem(p, itemId) {
+    const item = SHOP_ITEMS[itemId];
+    if (!item) return;
+    if (!p.shopOpen) {
+      this.emit("toast", { text: "Сначала поговори с Вороном." });
+      return;
     }
+    if (p.downed) return;
+    if (p.equipment?.[item.kind] === item.id) {
+      this.emit("toast", { text: "Эта вещь уже на тебе." });
+      return;
+    }
+    const current = SHOP_ITEMS[p.equipment?.[item.kind]];
+    if (current && (item.kind === "weapon" ? current.damage >= item.damage : current.maxHp >= item.maxHp)) {
+      this.emit("toast", { text: "Это не лучше того, что уже есть. Ворон не любит менять хорошее на худое." });
+      return;
+    }
+    if ((p.coins || 0) < item.price) {
+      this.emit("toast", { text: `Нужно монет: ${item.price}. Сейчас ${p.coins || 0}.` });
+      return;
+    }
+    p.coins -= item.price;
+    if (item.kind === "weapon") {
+      p.equipment = p.equipment || { weapon: null, armor: null };
+      p.equipment.weapon = item.id;
+    } else {
+      p.equipment = p.equipment || { weapon: null, armor: null };
+      p.equipment.armor = item.id;
+      const delta = item.maxHp - (current?.maxHp || 0);
+      p.maxHp += delta;
+      p.hp = Math.min(p.maxHp, p.hp + Math.max(0, delta));
+      p.damageReduce = item.reduce || 0;
+    }
+    this.emit("buy", { id: p.id, itemId: item.id, kind: item.kind, price: item.price, coins: p.coins });
+    this.emit("shop", { id: p.id, ...this.shopPayload(p) });
+    this.emit("toast", { text: `${item.name} куплено. Монет −${item.price}.` });
+  }
+
+  grantWeapon(p, itemId) {
+    const item = SHOP_ITEMS[itemId];
+    if (!item) return false;
+    p.equipment = p.equipment || { weapon: null, armor: null };
+    const current = SHOP_ITEMS[p.equipment.weapon];
+    if (current && current.damage >= item.damage) return false;
+    p.equipment.weapon = itemId;
     return true;
   }
+
+  grantCoins(p, amount, reason = "") {
+    const value = Math.max(0, Math.round(amount));
+    if (!value) return;
+    p.coins = (p.coins || 0) + value;
+    this.emit("coins", { id: p.id, x: p.x, y: p.y - 18, amount: value, reason });
+  }
+
+  /* ---------- отдых, смерть, добыча ---------- */
 
   rest(p) {
     for (const other of this.players.values()) {
@@ -1208,17 +1586,19 @@ export class World {
 
   damagePlayer(p, amount, source) {
     if (!p || p.downed || p.talking || p.invuln > 0) return;
-    p.hp -= amount;
+    const reduced = Math.max(1, Math.round(amount * (1 - (p.damageReduce || 0))));
+    p.hp -= reduced;
     p.invuln = 0.65;
     p.hitFlash = 0.18;
     if (p.channeling) this.cancelRevive(p);
-    this.emit("playerHurt", { id: p.id, x: p.x, y: p.y, amount });
+    this.emit("playerHurt", { id: p.id, x: p.x, y: p.y, amount: reduced });
     if (p.hp <= 0) {
       p.hp = 0;
       p.downed = true;
       p.downTimer = this.players.size > 1 ? 12 : 3;
       p.talking = false;
       p.dialogue = null;
+      p.shopOpen = false;
       p.channeling = false;
       p.reviveTargetId = null;
       this.emit("down", { id: p.id, x: p.x, y: p.y });
@@ -1237,6 +1617,7 @@ export class World {
     p.channeling = false;
     p.reviveTargetId = null;
     p.dialogue = null;
+    p.shopOpen = false;
     p.talking = false;
     this.emit("respawn", { id: p.id, x: p.x, y: p.y });
   }
@@ -1254,13 +1635,17 @@ export class World {
 
   killEnemy(e, player) {
     e.hp = 0;
+    const def = ENEMY_TYPES[e.type];
     this.emit("enemyDied", { id: e.id, x: e.x, y: e.y, type: e.type, name: e.name, boss: e.boss, elite: e.elite });
     if (player) {
       player.kills++;
-      const def = ENEMY_TYPES[e.type];
       this.addXp(player, def?.xp || 5);
       const shardAmount = e.boss ? 24 : e.elite ? 5 : 1 + (Math.random() < 0.35 ? 1 : 0);
       this.spawnPickup("shard", e.x + (Math.random() - 0.5) * 12, e.y + (Math.random() - 0.5) * 10, { value: shardAmount });
+      if (e.boss || Math.random() < (def?.coinDrop || 0)) {
+        const value = def?.coinValue || (e.elite ? 10 : 1);
+        this.spawnPickup("coin", e.x, e.y + 4, { value });
+      }
       if (Math.random() < (def?.memoryDrop || 0.08)) {
         this.spawnPickup("memory", e.x, e.y);
       } else if (Math.random() < 0.12) {
@@ -1275,25 +1660,19 @@ export class World {
         this.emit("toast", { text: "Три курганных вернулись в землю. Ада ждёт." });
       }
     }
-    if (e.type === "guardian") {
-      this.flags.guardianDead = true;
-      this.spawnPickup("ember", e.x, e.y, { kind: "peace", ttl: 0 });
-    }
     if (e.boss) {
       this.flags.bossDead = true;
-      this.quest.main.stage = Math.max(this.quest.main.stage, 4);
-      this.spawnPickup("heart", e.x, e.y, { ttl: 0 });
+      this.flags.bossActive = false;
+      this.boss = null;
       this.emit("bossDead", { x: e.x, y: e.y });
-      this.emit("quest", {});
+      this.advanceStage(4, "Похититель повержен. Клетка Лиры открыта.");
+      this.emit("toast", { text: "Замок клетки лопнул. Лира внутри." });
     }
-    if (!e.fixed && !e.boss && e.zone) {
-      this.respawnQueue.push({
-        type: e.type,
-        x: e.spawnX,
-        y: e.spawnY,
-        zone: e.zone,
-        at: this.time + 18,
-      });
+    if (!e.fixed && !e.boss && e.zone && this.zones.includes(e.zone)) {
+      const zone = e.zone;
+      zone.alive = Math.max(0, (zone.alive || 0) - 1);
+      zone.pendingCount = Math.min(zone.count, (zone.pendingCount || 0) + 1);
+      zone.nextAt = this.time + 18;
     }
     const idx = this.enemies.indexOf(e);
     if (idx >= 0) this.enemies.splice(idx, 1);
@@ -1316,11 +1695,12 @@ export class World {
     }
   }
 
-  // Стрела не должна рождаться внутри очага/верстака и исчезать в тот же кадр.
-  projectileOrigin(p, angle, dist) {
+  /* ---------- снаряды, добыча, сохранения ---------- */
+
+  projectileOrigin(p, angle, distance) {
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
-    for (let d = dist; d >= 3; d -= 2) {
+    for (let d = distance; d >= 3; d -= 2) {
       const x = p.x + cos * d;
       const y = p.y + sin * d;
       if (!this.map.isBlocked(x, y, 3)) return { x, y };
@@ -1329,7 +1709,8 @@ export class World {
   }
 
   spawnProjectile(opts) {
-    const p = {      id: uid("p"),
+    const p = {
+      id: uid("p"),
       x: opts.x,
       y: opts.y,
       vx: opts.vx,
@@ -1365,7 +1746,7 @@ export class World {
       }
       if (proj.team === "player") {
         for (const e of this.enemies) {
-          if (e.hp <= 0) continue;
+          if (e.hp <= 0 || e.dormant) continue;
           if (proj.hitIds && proj.hitIds.has(e.id)) continue;
           if (dist(proj.x, proj.y, e.x, e.y) < e.radius + proj.radius) {
             this.damageEnemy(e, proj.damage, this.players.get(proj.owner));
@@ -1401,7 +1782,7 @@ export class World {
       type,
       x,
       y,
-      ttl: opts.ttl ?? (type === "heart" || type === "ember" ? 0 : 18),
+      ttl: opts.ttl ?? (type === "coin" ? 45 : 18),
       kind: opts.kind || null,
       value: opts.value || 0,
       born: this.time,
@@ -1415,7 +1796,8 @@ export class World {
       if (pick.ttl > 0) {
         pick.ttl -= dt;
         if (pick.ttl <= 0) {
-          this.pickups.splice(this.pickups.indexOf(pick), 1);
+          const i = this.pickups.indexOf(pick);
+          if (i >= 0) this.pickups.splice(i, 1);
           continue;
         }
       }
@@ -1440,32 +1822,13 @@ export class World {
       const amount = pick.value || 1;
       p.shards = (p.shards || 0) + amount;
       this.emit("shards", { id: p.id, x: pick.x, y: pick.y - 10, amount });
-    } else if (pick.type === "ember") {
-      this.addEmber(pick.kind || "peace", p);
-      this.emit("toast", { text: "Уголёк Покоя найден." });
-    } else if (pick.type === "heart") {
-      this.flags.hasHeart = true;
-      this.quest.main.stage = Math.max(this.quest.main.stage, 5);
-      this.emit("heart", { x: pick.x, y: pick.y });
-      this.emit("quest", {});
-      this.emit("toast", { text: "Сердце Мглы бьётся в твоей руке. Вернись к Ирме." });
+    } else if (pick.type === "coin") {
+      const amount = pick.value || 1;
+      p.coins = (p.coins || 0) + amount;
+      this.emit("coins", { id: p.id, x: pick.x, y: pick.y - 10, amount });
     }
     const i = this.pickups.indexOf(pick);
     if (i >= 0) this.pickups.splice(i, 1);
-  }
-
-  updateRespawns() {
-    for (let i = this.respawnQueue.length - 1; i >= 0; i--) {
-      const r = this.respawnQueue[i];
-      if (this.time < r.at) continue;
-      let near = false;
-      for (const p of this.players.values()) {
-        if (dist(p.x, p.y, r.x, r.y) < 180) near = true;
-      }
-      if (near) continue;
-      this.respawnQueue.splice(i, 1);
-      this.spawnEnemy(r.type, r.x, r.y, { zone: r.zone });
-    }
   }
 
   hasLineOfSight(x1, y1, x2, y2) {
@@ -1498,18 +1861,17 @@ export class World {
   }
 
   nearWorkbench(p) {
-    const bench = this.map.props.find((prop) => prop.id === "workbench");
-    return !!bench && dist(p.x, p.y, bench.x, bench.y) < 96;
+    return this.map.props.some((prop) => prop.type === "workbench" && dist(p.x, p.y, prop.x, prop.y) < 100);
   }
 
   upgradeWeapon(p, key) {
     const def = WEAPON_UPGRADES[key];
     if (!def) return;
     if (!this.nearWorkbench(p)) {
-      this.emit("toast", { text: "Для прокачки нужен верстак у последнего очага." });
+      this.emit("toast", { text: "Для прокачки нужен верстак — дома или у последнего очага." });
       return;
     }
-    if (!p.weapon) p.weapon = { damage: 0, speed: 0, aim: 0, resonance: 0 };
+    if (!p.weapon) p.weapon = EMPTY_WEAPON();
     const level = p.weapon[key] || 0;
     if (level >= def.max) {
       this.emit("toast", { text: `${def.name}: уже предел.` });
@@ -1530,14 +1892,28 @@ export class World {
     const stage = this.quest.main.stage;
     const main = QUEST_MAIN.stages[stage] || "";
     const side = [];
-    if (this.quest.side.hunter < 3) side.push(SIDE_QUESTS.hunter.stages[this.quest.side.hunter]);
-    if (this.quest.side.name < 3) side.push(SIDE_QUESTS.name.stages[this.quest.side.name]);
-    if (this.quest.side.merchant < 2) side.push(SIDE_QUESTS.merchant.stages[this.quest.side.merchant]);
-    if ((this.quest.side.herbs || 1) < 3) side.push(SIDE_QUESTS.herbs.stages[this.quest.side.herbs || 1]);
-    if ((this.quest.side.beacons || 1) < 3) side.push(SIDE_QUESTS.beacons.stages[this.quest.side.beacons || 1]);
-    if ((this.quest.side.barrows || 1) < 3) side.push(SIDE_QUESTS.barrows.stages[this.quest.side.barrows || 1]);
-    if ((this.quest.side.truth || 1) < 2) side.push(SIDE_QUESTS.truth.stages[this.quest.side.truth || 1]);
+    for (const key of ["hunter", "name", "mill", "herbs", "beacons", "barrows", "truth"]) {
+      const quest = SIDE_QUESTS[key];
+      const progress = this.quest.side[key] || 1;
+      const text = quest?.stages?.[progress];
+      if (text) side.push(text);
+    }
     return { main, side };
+  }
+
+  daughterSnapshot() {
+    const d = this.daughter;
+    return {
+      id: d.id,
+      name: d.name,
+      x: Math.round(d.x * 10) / 10,
+      y: Math.round(d.y * 10) / 10,
+      state: d.state,
+      visible: !!d.visible,
+      facing: Math.round(d.facing * 100) / 100,
+      step: Math.round(d.step * 10) / 10,
+      following: d.state === "following" ? this.flags.rescuer : null,
+    };
   }
 
   snapshot(forId = null) {
@@ -1557,12 +1933,16 @@ export class World {
         downed: p.downed,
         downTimer: Math.round(p.downTimer * 10) / 10,
         talking: p.talking,
+        shopOpen: !!p.shopOpen,
         dialogue: forId == null || p.id === forId ? p.dialogueView || null : null,
         level: p.level,
         xp: p.xp,
         kills: p.kills,
         shards: p.shards || 0,
-        weapon: { ...(p.weapon || { damage: 0, speed: 0, aim: 0, resonance: 0 }) },
+        coins: p.coins || 0,
+        equipment: { ...(p.equipment || { weapon: null, armor: null }) },
+        weapon: { ...(p.weapon || EMPTY_WEAPON()) },
+        damageReduce: p.damageReduce || 0,
         reviveTargetId: p.reviveTargetId,
         reviveProgress: p.channeling ? Math.round((p.reviveTimer / p.reviveDuration) * 100) / 100 : 0,
         channeling: p.channeling,
@@ -1574,11 +1954,12 @@ export class World {
         dodgeCd: Math.round(p.dodgeCd * 10) / 10,
       });
     }
-    return {
+    const boss = this.enemies.find((e) => e.boss && e.active && e.hp > 0);
+    const snap = {
       t: Math.round(this.time * 1000) / 1000,
       players,
       enemies: this.enemies
-        .filter((e) => !e.dormant)
+        .filter((e) => !e.dormant && e.hp > 0)
         .map((e) => ({
           id: e.id,
           type: e.type,
@@ -1609,39 +1990,42 @@ export class World {
       })),
       pickups: this.pickups.map((p) => ({ id: p.id, type: p.type, x: p.x, y: p.y, value: p.value || 0, kind: p.kind || null })),
       npcs: this.npcs.map((n) => ({ id: n.id, name: n.name, x: n.x, y: n.y, color: n.color, cloak: n.cloak, alive: n.alive })),
+      daughter: this.daughterSnapshot(),
       flags: {
         ...this.flags,
-        emberKinds: { ...this.flags.emberKinds },
+        clues: { ...this.flags.clues },
         herbCollected: { ...this.flags.herbCollected },
         beaconsLit: { ...this.flags.beaconsLit },
-        riteNames: { ...this.flags.riteNames },
       },
       quest: { main: { ...this.quest.main }, side: { ...this.quest.side } },
+      questText: this.questText(),
       events: this.events.map((e) => ({ ...e })),
-      boss: this.enemies.find((e) => e.boss && e.active)
-        ? (() => {
-            const b = this.enemies.find((e) => e.boss);
-            return { x: b.x, y: b.y, hp: b.hp, maxHp: b.maxHp, phase: b.phase };
-          })()
+      boss: boss
+        ? { id: boss.id, x: boss.x, y: boss.y, hp: boss.hp, maxHp: boss.maxHp, phase: boss.phase }
         : null,
     };
+    if (forId) {
+      const me = this.players.get(forId);
+      if (me?.shopOpen) snap.shop = this.shopPayload(me);
+    }
+    return snap;
   }
 
   serialize(playerId) {
     const p = this.players.get(playerId);
     if (!p) return null;
     return {
-      version: 1,
+      version: 2,
       seed: this.seed,
       time: this.time,
       flags: {
         ...this.flags,
-        emberKinds: { ...this.flags.emberKinds },
+        clues: { ...this.flags.clues },
         herbCollected: { ...this.flags.herbCollected },
         beaconsLit: { ...this.flags.beaconsLit },
-        riteNames: { ...this.flags.riteNames },
       },
       quest: { main: { ...this.quest.main }, side: { ...this.quest.side } },
+      daughter: { ...this.daughter },
       player: {
         id: p.id,
         name: p.name,
@@ -1657,37 +2041,51 @@ export class World {
         kills: p.kills,
         bonusDamage: p.bonusDamage,
         shards: p.shards || 0,
-        weapon: { ...(p.weapon || { damage: 0, speed: 0, aim: 0, resonance: 0 }) },
+        coins: p.coins || 0,
+        weapon: { ...(p.weapon || EMPTY_WEAPON()) },
+        equipment: { ...(p.equipment || { weapon: null, armor: null }) },
+        damageReduce: p.damageReduce || 0,
       },
       savedAt: Date.now(),
     };
   }
 
-  restoreSave(data, playerId = "host") {
-    if (!data || data.version !== 1) return false;
+  restoreSave(data, playerId = "local") {
+    if (!data || data.version !== 2) return false;
     this.flags = {
       ...this.flags,
-      ...data.flags,
-      emberKinds: { ...this.flags.emberKinds, ...(data.flags?.emberKinds || {}) },
+      ...(data.flags || {}),
+      clues: { ...this.flags.clues, ...(data.flags?.clues || {}) },
       herbCollected: { ...this.flags.herbCollected, ...(data.flags?.herbCollected || {}) },
       beaconsLit: { ...this.flags.beaconsLit, ...(data.flags?.beaconsLit || {}) },
-      riteNames: { ...this.flags.riteNames, ...(data.flags?.riteNames || {}) },
     };
-    this.quest = { main: { ...this.quest.main, ...(data.quest?.main || {}) }, side: { ...this.quest.side, ...(data.quest?.side || {}) } };
-    this.map.setChapelOpen(!!this.flags.chapelOpen);
-    if (this.flags.bossDead) {
-      const boss = this.enemies.find((e) => e.boss);
-      if (boss) this.enemies.splice(this.enemies.indexOf(boss), 1);
-      if (!this.flags.hasHeart && !this.flags.ending) {
-        this.spawnPickup("heart", 44 * TILE, 9 * TILE, { ttl: 0 });
-      }
+    this.quest = {
+      main: { ...this.quest.main, ...(data.quest?.main || {}) },
+      side: { ...this.quest.side, ...(data.quest?.side || {}) },
+    };
+    const stage = this.quest.main.stage;
+    if (data.daughter && typeof data.daughter.state === "string") {
+      this.daughter = { ...this.daughter, ...data.daughter };
+    } else if (stage <= 0) {
+      this.daughter.state = "home";
+    } else if (stage >= 7) {
+      this.daughter.state = "bed";
+    } else if (stage >= 6) {
+      this.daughter.state = "table";
+    } else if (stage >= 5) {
+      this.daughter.state = "following";
+      this.flags.rescuer = playerId;
+    } else {
+      this.daughter.state = "cage";
     }
-    if (this.flags.guardianDead) {
-      const g = this.enemies.find((e) => e.type === "guardian");
-      if (g) this.enemies.splice(this.enemies.indexOf(g), 1);
-      if (!this.flags.emberKinds.peace) {
-        this.spawnPickup("ember", 44 * TILE, 49 * TILE, { kind: "peace", ttl: 0 });
+    this.flags.daughterState = this.daughter.state;
+    if (stage >= 8) this.flags.daughterTucked = true;
+    if (this.flags.bossDead) {
+      if (this.boss) {
+        const i = this.enemies.indexOf(this.boss);
+        if (i >= 0) this.enemies.splice(i, 1);
       }
+      this.boss = null;
     }
     if (data.player) {
       const s = data.player;
@@ -1699,21 +2097,31 @@ export class World {
       p.kills = s.kills || 0;
       p.bonusDamage = s.bonusDamage || 0;
       p.shards = s.shards || 0;
-      p.weapon = { damage: 0, speed: 0, aim: 0, resonance: 0, ...(s.weapon || {}) };
-      p.maxHp = s.maxHp || p.maxHp;
-      p.maxMemory = s.maxMemory || p.maxMemory;
+      p.coins = s.coins || 0;
+      p.weapon = { ...EMPTY_WEAPON(), ...(s.weapon || {}) };
+      p.equipment = { weapon: null, armor: null, ...(s.equipment || {}) };
+      p.maxHp = Math.max(1, s.maxHp || p.maxHp);
+      p.maxMemory = Math.max(1, s.maxMemory || p.maxMemory);
+      const armor = SHOP_ITEMS[p.equipment.armor];
+      p.damageReduce = armor?.reduce || 0;
+      if (this.map.isBlocked(p.x, p.y, 12)) {
+        const spawn = this.findSpawn();
+        p.x = spawn.x;
+        p.y = spawn.y;
+      }
     }
+    this.syncBossScaling();
     return true;
   }
 }
 
 function whisperText(p) {
   const lines = [
-    `${p.name}... ты ещё помнишь, как тебя звали?`,
+    `${p.name}... ты ещё помнишь, как её звали?`,
     "Не оглядывайся. За тобой идёт то, что ты забыл.",
-    "Огонь голоден. Он всегда был голоден.",
+    "Серые забирают тех, кого перестают искать.",
     "Имя — это свеча. Не дай ей погаснуть.",
-    "Мы все когда-то были кем-то.",
+    "Лира считает шаги. Не заставляй её считать слишком долго.",
   ];
   return lines[Math.floor(Math.random() * lines.length)];
 }

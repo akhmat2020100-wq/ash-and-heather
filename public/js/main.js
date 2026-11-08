@@ -8,9 +8,9 @@ import { AudioEngine } from "./audio.js";
 import { UI } from "./ui.js";
 import { Net, defaultWsUrl, expandJoinCandidates } from "./net.js";
 
-const SAVE_KEY = "ash-heather-save-v1";
+const SAVE_KEY = "ash-heather-save-v2";
 const SETTINGS_KEY = "ash-heather-settings-v1";
-const MARKER_KEY = "ash-heather-markers-v2";
+const MARKER_KEY = "ash-heather-markers-v3";
 
 const canvas = document.getElementById("game");
 const renderer = new Renderer(canvas);
@@ -78,7 +78,7 @@ function loadSave() {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
-    if (!data || data.version !== 1 || !data.player) return null;
+    if (!data || data.version !== 2 || !data.player) return null;
     return data;
   } catch {
     return null;
@@ -211,6 +211,9 @@ ui.onJoin = () => {
     ui.setJoinAddress(defaultWsUrl());
   }
 };
+ui.onRefreshServers = () => refreshServers();
+ui.onBuy = (itemId) => sendAction("buy", { id: itemId });
+ui.onShopClose = () => sendAction("closeShop");
 ui.onCharBack = () => ui.showMenu();
 ui.onCharStart = (cfg) => {
   audio.unlock();
@@ -283,6 +286,7 @@ function resetSessionState() {
   shardHinted = false;
   ui.closeMap();
   ui.closeWorkbench();
+  ui.closeShop(false);
   renderer.clearEffects();
   if (clientReadyTimer) {
     clearTimeout(clientReadyTimer);
@@ -324,13 +328,13 @@ function startSolo(cfg, restore) {
     }
     setupMap();
     running = true;
-    ui.setRoomChip("глава I · один в тумане");
+    ui.setRoomChip("глава II · один в тумане");
     beginVisuals();
     setTimeout(() => {
       if (token !== sessionToken) return;
       ui.setFade(false);
       if (restore) ui.toast("Огонь помнит тебя. Глава продолжается.");
-      else ui.toast("Ты входишь в туман. Имя пока при тебе.");
+      else ui.toast("Ты просыпаешься дома. Лира ждёт наверху.");
       persistSave();
     }, 260);
   } catch (err) {
@@ -411,7 +415,7 @@ async function startClient(cfg) {
   resetSessionState();
   const address = (cfg.joinUrl || "").trim();
   if (!address) {
-    ui.toast("Введи адрес хоста.");
+    ui.toast("Выбери найденный хост или введи адрес вручную.");
     return;
   }
   ui.setFade(true);
@@ -477,6 +481,99 @@ async function fetchStatus() {
   }
 }
 
+function toWsUrl(entry) {
+  if (!entry) return "";
+  let value = String(entry).trim();
+  if (!value) return "";
+  if (/^wss?:\/\//i.test(value)) return value;
+  if (/^https?:\/\//i.test(value)) {
+    try {
+      const url = new URL(value);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      url.pathname = "/ws";
+      url.search = "";
+      url.hash = "";
+      return url.toString();
+    } catch {
+      return "";
+    }
+  }
+  value = value.replace(/^\/+|\/+$/g, "");
+  return /:\d+$/.test(value) ? `ws://${value}/ws` : `ws://${value}:8080/ws`;
+}
+
+function normalizeServer(entry) {
+  if (!entry) return null;
+  if (typeof entry === "string") {
+    const ws = toWsUrl(entry);
+    return ws ? { name: "Хост", ws, host: ws.replace(/^wss?:\/\//, "").replace(/\/ws$/, "") } : null;
+  }
+  const ws = toWsUrl(entry.ws || entry.wsUrl || entry.url || entry.host);
+  if (!ws) return null;
+  const host = entry.host || ws.replace(/^wss?:\/\//, "").replace(/\/ws$/, "");
+  return {
+    name: entry.name || entry.title || "Хост",
+    host,
+    ws,
+    url: entry.url || "",
+  };
+}
+
+async function discoverServers() {
+  const found = [];
+  const pushAll = (value) => {
+    let data = value;
+    if (typeof data === "string") {
+      try { data = JSON.parse(data); } catch { data = null; }
+    }
+    if (!data) return;
+    if (Array.isArray(data)) {
+      for (const item of data) {
+        const server = normalizeServer(item);
+        if (server) found.push(server);
+      }
+    } else if (Array.isArray(data.servers)) {
+      for (const item of data.servers) {
+        const server = normalizeServer(item);
+        if (server) found.push(server);
+      }
+    }
+  };
+  try {
+    for (const fn of ["discoverHosts", "discoverServers", "discover"]) {
+      const call = window.AshNative?.[fn];
+      if (typeof call !== "function") continue;
+      try {
+        pushAll(call.call(window.AshNative));
+        break;
+      } catch {}
+    }
+  } catch {}
+  try {
+    const res = await fetch("/api/discover", { cache: "no-store" });
+    if (res.ok) pushAll(await res.json());
+  } catch {}
+  const seen = new Set();
+  const unique = [];
+  for (const server of found) {
+    if (!server?.ws || seen.has(server.ws)) continue;
+    seen.add(server.ws);
+    unique.push(server);
+  }
+  return unique.slice(0, 8);
+}
+
+async function refreshServers() {
+  if (running) return;
+  ui.setServersLoading();
+  try {
+    const list = await discoverServers();
+    ui.setServers(list);
+  } catch {
+    ui.setServers([]);
+  }
+}
+
 async function resolveRoomAddress() {
   try {
     if (window.AshNative?.getLanUrl) {
@@ -496,7 +593,7 @@ function updateRoomLabel() {
   if (!running && !world && !latestSnap) return;
   const count = latestSnap?.players?.length || world?.players?.size || 1;
   if (mode === "solo") {
-    ui.setRoomChip("глава I · один в тумане");
+    ui.setRoomChip("глава II · один в тумане");
   } else if (mode === "host") {
     const short = roomAddress ? roomAddress.replace(/^https?:\/\//, "") : "";
     ui.setRoomChip(short ? `хост · ${count}/4 · ${short}` : `хост · ${count}/4`);
@@ -576,12 +673,12 @@ function addRemotePlayer(j) {
     return;
   }
   if (world.players.has(j.id)) return;
-  const spawn = world.findSpawn(46 * TILE, 35.5 * TILE);
+  const spawn = world.findSpawn();
   world.addPlayer(j.id, j.name, j.cls, { x: spawn.x, y: spawn.y });
   net?.send({ t: "event", to: j.id, type: "worldSeed", seed: world.seed });
   ui.toast(`${j.name || "Странник"} присоединился к костру.`);
   ui.setRoomChip(`хост · ${world.players.size}/4${roomAddress ? " · " + roomAddress.replace(/^https?:\/\//, "") : ""}`);
-  audio.play("ember");
+  audio.play("join");
 }
 
 function maxEventId(events) {
@@ -675,6 +772,10 @@ const input = new Input({
       if (action === "interact" || action === "attack") ui.closeWorkbench();
       return;
     }
+    if (ui.isShopOpen()) {
+      if (action === "interact" || action === "attack") ui.closeShop();
+      return;
+    }
     if (ui.isDialogueOpen()) {
       if (action === "attack") {
         if (ui.typing) ui.finishTyping();
@@ -700,6 +801,10 @@ const input = new Input({
     }
     if (ui.isWorkbenchOpen()) {
       ui.closeWorkbench();
+      return;
+    }
+    if (ui.isShopOpen()) {
+      ui.closeShop();
       return;
     }
     togglePause();
@@ -792,7 +897,7 @@ function loop(now) {
 /* INIT_MAIN_3 */
 function tick(dt) {
   const dialogueOpen = ui.isDialogueOpen();
-  const overlayOpen = ui.isMapOpen() || ui.isWorkbenchOpen();
+  const overlayOpen = ui.isMapOpen() || ui.isWorkbenchOpen() || ui.isShopOpen();
   const canControl = !paused && !gameEnded && !dialogueOpen && !overlayOpen;
   const mv = canControl ? input.move : { x: 0, y: 0 };
 
@@ -814,6 +919,7 @@ function tick(dt) {
   if ((mode === "solo" || mode === "host") && world) {
     const soloOverlayPause = mode === "solo" && overlayOpen;
     if (!paused && !gameEnded && !soloOverlayPause) {
+      world.setViewport(renderer.w, renderer.h, renderer.zoom);
       world.update(dt);
       handleEvents(world.events);
       saveTimer -= dt;
@@ -973,10 +1079,19 @@ function computeHint(scene, me) {
     else if (p.interact.kind === "beacon") {
       const key = p.id.replace(/^beacon_/, "");
       text = scene.flags?.beaconsLit?.[key] ? "Сигнальный огонь уже горит" : "Действие — зажечь сигнальный огонь";
-    }
-    else if (p.interact.kind === "door") text = scene.flags?.chapelOpen ? "Действие — войти в часовню" : "Действие — осмотреть дверь";
-    else if (p.interact.kind === "shrine") text = "Действие — коснуться алтаря";
-    else if (p.interact.kind === "dialogue") {
+    } else if (p.interact.kind === "clue") {
+      text = scene.flags?.clues?.[p.interact.key] ? "След уже прочитан" : "Действие — осмотреть след";
+    } else if (p.interact.kind === "bed") {
+      const stage = scene.quest?.main?.stage ?? 0;
+      if (stage === 0) text = "Действие — подойти к Лире";
+      else if (stage === 7) text = "Действие — укрыть Лиру одеялом";
+      else if (stage >= 8) text = "Действие — погасить свечу";
+      else text = "Постель пуста";
+    } else if (p.interact.kind === "table") {
+      text = scene.quest?.main?.stage === 6 ? "Действие — накормить Лиру" : "Действие — осмотреть стол";
+    } else if (p.interact.kind === "cage") {
+      text = scene.flags?.bossDead && scene.quest?.main?.stage === 4 ? "Действие — открыть клетку" : "Действие — осмотреть клетку";
+    } else if (p.interact.kind === "dialogue") {
       if (p.interact.script === "nameTree") text = "Действие — слушать Дерево Имён";
       else if (p.interact.script?.startsWith("note")) text = "Действие — прочитать";
       else text = "Действие — коснуться";
@@ -991,6 +1106,7 @@ let lastHitSoundAt = 0;
 let lastSlashSoundAt = 0;
 let lastShootSoundAt = 0;
 let lastShardSoundAt = 0;
+let lastCoinSoundAt = 0;
 
 function eventPlayerPos(id) {
   const fromWorld = world?.players.get(id);
@@ -1029,22 +1145,73 @@ function routeEvent(e) {
         audio.play("shard");
         if (!shardHinted) {
           shardHinted = true;
-          ui.toast("Осколки — плата за прокачку. Верстак стоит у последнего очага, рядом с Ирмой.");
+          ui.toast("Осколки — плата за прокачку. Верстак стоит дома и у последнего очага.");
         }
       }
       break;
     }
-    case "riteName": {
-      renderer.addBurst("particle", e.x, e.y, { color: "#d7e8c8", count: 16, speed: 55, lift: 34, ttl: 0.7 });
-      renderer.addFloater(e.x, e.y - 8, e.name, "#d7e8c8", true);
-      if (e.id === myId) audio.play("memory");
+    case "checkpoint": {
+      // Автосохранение после каждого шага основной истории — без кнопки.
+      if (mode === "solo" || mode === "host") persistSave();
+      audio.play("checkpoint");
       break;
     }
-    case "riteOpen": {
-      renderer.addBurst("particle", e.x, e.y - 10, { color: "#ffe6bd", count: 28, speed: 70, lift: 40, ttl: 0.9 });
-      renderer.addFloater(e.x, e.y - 30, "Ильга · Орен · Ивар", "#ffe6bd", true);
-      renderer.shake(3);
-      audio.play("ember");
+    case "clue": {
+      const pos = eventPlayerPos(e.id);
+      if (pos) renderer.addBurst("particle", pos.x, pos.y, { color: "#ffe6bd", count: 14, speed: 55, lift: 30, ttl: 0.7 });
+      if (e.id === myId) audio.play("clue");
+      break;
+    }
+    case "kidnap": {
+      renderer.addBurst("particle", e.x, e.y, { color: "#8790a8", count: 30, speed: 80, lift: 46, ttl: 1.2 });
+      renderer.shake(9);
+      audio.play("kidnap");
+      break;
+    }
+    case "daughterRescued": {
+      renderer.addBurst("particle", e.x, e.y, { color: "#ffe6bd", count: 26, speed: 70, lift: 42, ttl: 1 });
+      audio.play("rescued");
+      break;
+    }
+    case "daughterFed": {
+      const pos = eventPlayerPos(e.id);
+      if (pos) renderer.addBurst("particle", pos.x, pos.y, { color: "#efcfa5", count: 12, speed: 40, lift: 30, ttl: 0.8 });
+      audio.play("feed");
+      break;
+    }
+    case "daughterAsleep": {
+      renderer.addBurst("particle", e.x, e.y - 10, { color: "#bcd0ea", count: 22, speed: 40, lift: 34, ttl: 1.2 });
+      audio.play("sleep");
+      break;
+    }
+    case "shop": {
+      if (e.id === myId) {
+        input.clearPressed();
+        ui.openShop({ coins: e.coins, equipment: e.equipment, items: e.items || [] });
+        audio.play("ui");
+      }
+      break;
+    }
+    case "shopClose": {
+      if (e.id === myId) {
+        input.clearPressed();
+        ui.closeShop(false);
+      }
+      break;
+    }
+    case "buy": {
+      if (e.id === myId) audio.play("buy");
+      break;
+    }
+    case "coins": {
+      renderer.addBurst("particle", e.x, e.y, { color: "#ffd166", count: 5, speed: 36, lift: 20, ttl: 0.4, gravity: 30 });
+      if (e.id === myId) {
+        renderer.addFloater(e.x, e.y - 18, `+${e.amount} ●`, "#ffd166");
+        if (performance.now() - lastCoinSoundAt > 90) {
+          lastCoinSoundAt = performance.now();
+          audio.play("coin");
+        }
+      }
       break;
     }
     case "dialogue":
@@ -1185,12 +1352,12 @@ function routeEvent(e) {
     case "quest":
       break;
     case "bossIntro":
-      ui.toast("Плакальщик у Часовни проснулся. Он плачет о забытых именах.");
+      ui.toast("Серый Похититель проснулся в глубине Серых скал. Лира где-то рядом.");
       audio.play("bossIntro");
       renderer.shake(7);
       break;
     case "bossPhase":
-      ui.toast(e.phase === 3 ? "Маска треснула. Плакальщик больше не сдерживается." : "Плакальщик плачет громче. Слёзы стали острее.");
+      ui.toast(e.phase === 3 ? "Серый Похититель больше не сдерживается. Тени поют её имя." : "Похититель плачет громче. Слёзы стали острее.");
       audio.play("bossPhase");
       renderer.shake(5);
       break;
@@ -1204,7 +1371,7 @@ function routeEvent(e) {
       renderer.shake(13);
       break;
     case "bossSummon":
-      ui.toast("Тени собираются вокруг Плакальщика.");
+      ui.toast("Тени детей собираются вокруг Похитителя.");
       break;
     case "bossDead":
       renderer.addBurst("particle", e.x, e.y, { color: "#cfe4f4", count: 40, speed: 130, ttl: 1.4, gravity: 10 });
@@ -1214,9 +1381,6 @@ function routeEvent(e) {
       break;
     case "enemyDied":
       if (!e.boss) renderer.addBurst("particle", e.x, e.y, { color: "#6d7180", count: 8, speed: 50, ttl: 0.6 });
-      break;
-    case "heart":
-      audio.play("chime");
       break;
     case "enemyShoot":
       break;
@@ -1252,11 +1416,11 @@ function showEnding(kind) {
   } else if (world) {
     me = world.players.get(myId);
   }
-  const embers = mode === "client" ? latestSnap?.flags?.embers ?? 0 : world?.flags.embers ?? 0;
   ui.showEnd(kind, {
     level: me?.level ?? 1,
     kills: me?.kills ?? 0,
-    embers,
+    coins: me?.coins ?? 0,
+    shards: me?.shards ?? 0,
   });
   audio.play("ending");
   clearSave();

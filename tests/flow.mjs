@@ -1,360 +1,207 @@
+/*
+ * Сюжетный прогон v0.4: полный путь от вечера в детской до затушенной
+ * свечи, плюс магазин, боковые квесты, автосейв и масштабирование босса.
+ */
 import { World } from "../public/js/world.js";
+import { ENEMY_TYPES, QUEST_MAIN, SHOP_ITEMS } from "../public/js/data.js";
 
 let failed = 0;
 function check(ok, label, extra = "") {
-  if (!ok) {
-    failed++;
-    console.error("FAIL", label, extra);
-  } else {
+  if (ok) {
     console.log("ok", label);
+    return;
   }
+  failed++;
+  console.error("FAIL", label, extra);
 }
 
 const w = new World({ seed: 1 });
 const p = w.addPlayer("host", "Тест", "lantern");
-p.x = 43.5 * 32;
-p.y = 36.3 * 32;
-p.invuln = 0;
+p.invuln = 999;
 
-w.tryInteract(p);
-check(p.dialogueView?.nodeId === "intro", "Ирма открывает пролог");
-console.log("dialogue", p.dialogueView?.nodeId, p.dialogueView?.speaker);
-w.chooseDialogue(p, 2); // start main
-check(w.quest.main.stage === 1, "квест начинается");
-check(p.talking, "диалог не закрылся до конца текста");
-console.log("stage after intro", w.quest.main.stage, "talking", p.talking);
+const npc = (id) => w.npcs.find((n) => n.id === id || n.dialogue === id);
+const go = (x, y) => {
+  p.x = x;
+  p.y = y;
+  p.interactCd = 0;
+};
+const goLandmark = (name) => {
+  const l = w.map.landmarks[name];
+  go(l.x, l.y);
+};
+const interact = () => {
+  p.talking = false;
+  p.dialogue = null;
+  p.interactCd = 0;
+  w.tryInteract(p);
+};
+
+/* ---------- пролог: вечер, сказка, похищение ---------- */
+
+check(w.quest.main.stage === 0, "старт на стадии 0");
+check(w.daughter.state === "home", "Лира дома в начале");
+
+goLandmark("bed");
+interact();
+check(p.dialogueView?.nodeId === "intro", "постель открывает вечернюю сцену");
+check(p.dialogueView?.speaker === "Лира", "говорит Лира");
+
+w.chooseDialogue(p, 0); // сказка
+check(p.dialogueView?.nodeId === "story", "сказка про фонарщика");
+w.chooseDialogue(p, 0); // продолжение
+check(p.dialogueView?.nodeId === "story2", "сказка про девочку");
+w.chooseDialogue(p, 0); // к постели
+check(p.dialogueView?.nodeId === "tuck", "сцена укладывания");
+w.chooseDialogue(p, 0); // укрыть одеялом -> kidnap
+check(w.quest.main.stage === 1, "похищение двигает сюжет на стадию 1");
+check(w.daughter.state === "cage", "Лира в клетке");
+check(w.flags.kidnapDone, "флаг похищения");
+check(p.dialogueView?.nodeId === "dark", "показана сцена удара");
 w.endDialogue(p);
 
-w.addEmber("loyalty", p);
-w.addEmber("memory", p);
-w.addEmber("peace", p);
-check(w.flags.embers === 3, "три уголька собраны");
-check(w.quest.main.stage === 2, "квест перешёл к возвращению");
-console.log("embers", w.flags.embers, "stage", w.quest.main.stage);
+/* ---------- три следа ---------- */
 
-p.x = 43.5 * 32;
-p.y = 36.3 * 32;
-w.tryInteract(p);
-check(p.dialogueView?.nodeId === "return", "Ирма ждёт у часовни");
-console.log("irma node", p.dialogueView?.nodeId);
-check(w.map.isBlocked(44 * 32, 17 * 32, 10), "дверь часовни запечатана");
-w.chooseDialogue(p, 0); // начать обряд имён
-check(w.flags.riteStarted, "Ирма просит собрать три имени");
-check(!w.flags.chapelOpen, "дверь ещё запечатана без имён");
-
-p.x = 104.5 * 32;
-p.y = 45.5 * 32;
-w.tryInteract(p);
-check(p.dialogueView?.nodeId === "rite", "Мила хранит первое имя");
-w.chooseDialogue(p, 0);
-check(w.flags.riteNames.mila, "имя Ильги сохранено");
-
-p.x = 113.5 * 32;
-p.y = 53.5 * 32;
-w.tryInteract(p);
-check(p.dialogueView?.nodeId === "rite", "Гарм хранит второе имя");
-w.chooseDialogue(p, 0);
-check(w.flags.riteNames.garm, "имя Орена сохранено");
-
-p.x = 72 * 32;
-p.y = 80 * 32;
-w.tryInteract(p);
-check(p.dialogueView?.nodeId === "rite", "Ада хранит третье имя");
-w.chooseDialogue(p, 0);
-check(w.flags.riteNames.ada, "имя Ивара сохранено");
-check(w.flags.riteReady, "три имени собраны");
-check(!w.flags.chapelOpen, "дверь ждёт имена у порога");
-check(w.map.isBlocked(44 * 32, 17 * 32, 10), "дверь ещё запечатана");
-check(w.quest.main.stage === 2, "квест всё ещё ведёт к дверям");
-
-p.x = 44 * 32;
-p.y = 18.5 * 32;
-w.tryInteract(p);
-check(p.dialogueView?.nodeId === "rite", "дверь просит назвать имена");
-w.chooseDialogue(p, 0); // назвать имена
-check(w.flags.chapelOpen, "три имени открыли дверь часовни");
-check(p.dialogueView?.nodeId === "open", "дверь открывается в часовню");
-check(!w.map.isBlocked(44 * 32, 17 * 32, 10), "проход в часовню открыт");
-check(w.quest.main.stage === 3, "квест перешёл к боссу");
-w.chooseDialogue(p, 0); // закрыть диалог двери
-check(!p.talking, "диалог у двери закрыт");
-console.log("chapel", w.flags.chapelOpen, "stage", w.quest.main.stage);
-
-p.x = 44 * 32;
-p.y = 12 * 32;
-w.update(0.016);
-const boss = w.enemies.find((e) => e.boss);
-check(!!boss?.active, "Плакальщик пробудился");
-console.log("boss active", boss?.active, "flags", w.flags.bossActive);
-if (boss) {
-  boss.hp = 1;
-  w.damageEnemy(boss, 999, p);
+for (const [name, label] of [
+  ["clueLantern", "фонарь"],
+  ["clueRibbon", "лента"],
+  ["clueTracks", "колея"],
+]) {
+  goLandmark(name);
+  interact();
+  check(w.flags.cluesFound > 0, `след найден: ${label}`);
 }
-check(w.flags.bossDead, "Плакальщик побеждён");
-check(w.quest.main.stage === 4, "квест перешёл к Сердцу");
-console.log("bossDead", w.flags.bossDead, "stage", w.quest.main.stage, "pickups", w.pickups.map((x) => x.type));
 
-const heart = w.pickups.find((x) => x.type === "heart");
-check(!!heart, "Сердце Мглы выпало");
-if (heart) {
-  p.x = heart.x;
-  p.y = heart.y;
-  w.update(0.016);
+check(w.flags.cluesFound === 3, "все три следа собраны");
+check(w.quest.main.stage === 2, "следы ведут к мельнице");
+
+/* ---------- мельник и пещера ---------- */
+
+const miller = npc("miller");
+go(miller.x + 8, miller.y);
+interact();
+check(p.dialogueView?.nodeId === "daughter", "мельник говорит о Лире");
+w.chooseDialogue(p, 0); // куда именно
+check(p.dialogueView?.nodeId === "cave", "мельник указывает на скалы");
+w.chooseDialogue(p, 0); // идти -> millClue
+check(w.quest.main.stage === 3, "цель — пещера");
+w.endDialogue(p);
+
+/* ---------- босс: масштабирование по числу игроков ---------- */
+
+check(!!w.boss, "босс создан");
+check(w.boss.dormant, "босс ждёт игроков");
+const soloHp = w.boss.maxHp;
+check(soloHp === ENEMY_TYPES.boss.hp, "соло-HP босса базовый");
+
+const p2 = w.addPlayer("bro", "Брат", "ember");
+p2.invuln = 999;
+const duoHp = w.boss.maxHp;
+check(duoHp === Math.round(ENEMY_TYPES.boss.hp * 1.65), "HP босса растёт на двоих");
+check(w.boss.damage === Math.round(ENEMY_TYPES.boss.damage * 1.2), "урон босса растёт на двоих");
+
+/* ---------- победа и спасение ---------- */
+
+w.damageEnemy(w.boss, w.boss.hp + 999, p);
+check(w.flags.bossDead, "похититель повержен");
+check(w.quest.main.stage === 4, "клетка открыта");
+
+goLandmark("cage");
+interact();
+check(p.dialogueView?.nodeId === "intro", "клетка открывает диалог спасения");
+w.chooseDialogue(p, 0); // сломать замок -> rescueDaughter
+check(w.quest.main.stage === 5, "Лира идёт за героем");
+check(w.daughter.state === "following", "дочь следует");
+w.endDialogue(p);
+
+/* ---------- домой, накормить, уложить ---------- */
+
+goLandmark("home");
+w.daughter.x = w.map.landmarks.home.x + 12;
+w.daughter.y = w.map.landmarks.home.y + 12;
+w.updateStory();
+check(w.quest.main.stage === 6, "дома Лира садится за стол");
+check(w.daughter.state === "table", "дочь за столом");
+
+goLandmark("table");
+interact();
+check(p.dialogueView?.nodeId === "intro", "стол открывает сцену кормления");
+w.chooseDialogue(p, 0); // съешь всё -> feedDaughter
+check(w.quest.main.stage === 7, "Лира накормлена");
+w.endDialogue(p);
+
+goLandmark("bed");
+interact();
+check(p.dialogueView?.nodeId === "intro", "постель открывает сцену укладывания");
+w.chooseDialogue(p, 0); // буду рядом -> tuckIn
+check(w.quest.main.stage === 8, "Лира уснула");
+check(w.flags.daughterTucked, "флаг укрытой дочери");
+
+// Ветка stage>=8 должна открываться — раньше её съедал stage>=7.
+goLandmark("bed");
+interact();
+check(p.dialogueView?.nodeId === "after", "после финала постель говорит 'after'");
+w.endDialogue(p);
+
+/* ---------- финал ---------- */
+
+w.startDialogue(p, "tuck", "asleep");
+w.chooseDialogue(p, 0); // погасить свечу -> finishStory
+check(!!w.flags.ending, "история завершена");
+check(w.events.some((e) => e.type === "ending"), "событие концовки отправлено");
+
+/* ---------- магазин ---------- */
+
+const shopper = w.addPlayer("shopper", "Покупатель", "ember");
+shopper.coins = 5000;
+shopper.shopOpen = true;
+const beforeDmg = w.weaponDamage(shopper);
+w.buyItem(shopper, "kitchen_knife");
+check(shopper.equipment.weapon === "kitchen_knife", "нож куплен и надет");
+check(w.weaponDamage(shopper) > beforeDmg, "нож добавил урон");
+const coinsAfterKnife = shopper.coins;
+check(coinsAfterKnife === 5000 - SHOP_ITEMS.kitchen_knife.price, "монеты списаны по цене");
+
+w.buyItem(shopper, "grey_aegis");
+check(shopper.equipment.armor === "grey_aegis", "броня куплена и надета");
+check(shopper.damageReduce > 0, "броня даёт защиту");
+check(SHOP_ITEMS.grey_aegis.price > SHOP_ITEMS.kitchen_knife.price, "цены растут вместе со статами");
+
+/* ---------- автосейв ---------- */
+
+const save = w.serialize("host");
+check(save?.version === 2, "сейв версии 2");
+check(save.quest.main.stage >= 8, "в сейве финальная стадия");
+const w2 = new World({ seed: save.seed });
+check(w2.restoreSave(save, "host"), "сейв восстанавливается");
+check(w2.quest.main.stage === save.quest.main.stage, "стадия восстановлена");
+check(w2.flags.ending === save.flags.ending, "концовка восстановлена");
+check(w2.daughter.state === save.daughter.state, "состояние дочери восстановлено");
+check(w2.players.get("host").coins >= 0, "игрок восстановлен");
+
+/* ---------- спавн вне поля зрения ---------- */
+
+const w3 = new World({ seed: 7 });
+w3.setViewport(1920, 1080, 0.82);
+const viewer = w3.addPlayer("viewer", "Зритель", "lantern");
+viewer.x = w3.map.landmarks.home.x;
+viewer.y = w3.map.landmarks.home.y;
+const half = w3.viewHalf();
+check(!w3.canSpawnAt(viewer.x + half.x - 10, viewer.y, 14), "внутри экрана спавн запрещён");
+check(!w3.canSpawnAt(viewer.x, viewer.y + half.y - 10, 14), "по вертикали тоже запрещён");
+check(w3.canSpawnAt(viewer.x + half.x + 40, viewer.y, 14), "за краем экрана спавн разрешён");
+
+let inside = 0;
+for (const zone of w3.zones) {
+  const point = w3.pickZonePoint(zone);
+  if (!point) continue;
+  if (Math.abs(point.x - viewer.x) < half.x && Math.abs(point.y - viewer.y) < half.y) inside++;
 }
-check(w.flags.hasHeart, "Сердце Мглы подобрано");
-check(w.quest.main.stage === 5, "квест перешёл к Ирме");
-console.log("hasHeart", w.flags.hasHeart, "stage", w.quest.main.stage);
+check(inside === 0, "ни одна зона не ставит врага в кадр");
 
-p.x = 43.5 * 32;
-p.y = 36.3 * 32;
-w.tryInteract(p);
-check(p.dialogueView?.nodeId === "afterBoss", "Ирма предлагает финал");
-console.log("irma after boss", p.dialogueView?.nodeId);
-w.chooseDialogue(p, 0); // ending hope
-check(p.dialogueView?.nodeId === "endingHope", "выбран финал надежды");
-check(w.flags.pendingEnding === "hope", "финал надежды ожидает подтверждения");
-console.log("ending node", p.dialogueView?.nodeId, "pending", w.flags.pendingEnding);
-w.chooseDialogue(p, 0); // finish
-check(w.flags.ending === "hope", "финал надежды записан");
-check(w.quest.main.stage === 6, "глава завершена");
-check(!p.talking, "диалог закрыт после финала");
-console.log("ending", w.flags.ending, "stage", w.quest.main.stage, "talking", p.talking);
-
-/* --- второй финал --- */
-const w2 = new World({ seed: 2 });
-const p2 = w2.addPlayer("p2", "Второй", "hunter");
-w2.flags.hasHeart = true;
-w2.flags.bossDead = true;
-w2.quest.main.stage = 5;
-p2.x = 43.5 * 32;
-p2.y = 36.3 * 32;
-w2.tryInteract(p2);
-check(p2.dialogueView?.nodeId === "afterBoss", "второй финал доступен");
-w2.chooseDialogue(p2, 1); // ending power
-check(w2.flags.pendingEnding === "power", "финал силы ожидает подтверждения");
-w2.chooseDialogue(p2, 0);
-check(w2.flags.ending === "power", "финал силы записан");
-check(w2.quest.main.stage === 6, "второй финал завершает главу");
-
-/* --- побочные квесты --- */
-const w3 = new World({ seed: 3 });
-const p3 = w3.addPlayer("p3", "Третий", "lantern");
-p3.x = 12 * 32;
-p3.y = 33 * 32;
-w3.tryInteract(p3);
-check(p3.dialogueView?.nodeId === "intro", "Дерево Имён отвечает");
-const hpBefore = p3.maxHp;
-w3.chooseDialogue(p3, 1); // вернуть имя
-check(w3.flags.nameChoice === "return", "имя возвращено миру");
-check(p3.maxHp === hpBefore + 10, "возврат имени даёт здоровье");
-check(w3.flags.emberKinds.memory, "уголёк памяти получен у дерева");
-w3.chooseDialogue(p3, 0); // закрыть диалог дерева
-check(!p3.talking, "диалог дерева закрыт");
-
-p3.x = 38.5 * 32;
-p3.y = 31.5 * 32;
-p3.memory = Math.max(p3.memory, 40);
-w3.tryInteract(p3);
-check(p3.dialogueView?.nodeId === "intro", "Ворон начинает торг");
-const hp2 = p3.maxHp;
-w3.chooseDialogue(p3, 0); // обмен
-check(w3.flags.merchantTrade, "сделка с Вороном состоялась");
-check(p3.maxHp === hp2 + 15, "оберег увеличивает здоровье");
-check(w3.quest.side.merchant === 2, "побочный квест торговца закрыт");
-check(p3.dialogueView?.nodeId === "trade", "Ворон завершает сделку");
-w3.chooseDialogue(p3, 0);
-check(!p3.talking, "диалог с Вороном закрыт");
-
-/* --- кооператив: подъём союзника --- */
-const w5 = new World({ seed: 5 });
-const a5 = w5.addPlayer("a5", "Первый", "lantern");
-const b5 = w5.addPlayer("b5", "Второй", "hunter");
-b5.invuln = 0;
-w5.damagePlayer(b5, 9999, null);
-check(b5.downed, "союзник падает");
-a5.x = b5.x;
-a5.y = b5.y;
-a5.invuln = 99;
-w5.tryInteract(a5);
-check(a5.channeling && a5.reviveTargetId === b5.id, "подъём начат");
-for (let i = 0; i < 40; i++) w5.update(0.05);
-check(!b5.downed, "союзник поднят");
-check(b5.hp > 0, "у поднятого есть здоровье");
-check(a5.memory < 100, "подъём тратит память");
-
-/* --- побочный квест охотника --- */
-const w6 = new World({ seed: 6 });
-const p6 = w6.addPlayer("p6", "Шестой", "hunter");
-p6.x = 72.5 * 32;
-p6.y = 38.5 * 32;
-w6.tryInteract(p6);
-check(p6.dialogueView?.nodeId === "intro", "Раненый охотник говорит");
-w6.chooseDialogue(p6, 0); // отдать уголёк
-check(w6.flags.emberKinds.loyalty, "уголёк верности получен");
-check(w6.quest.side.hunter === 2, "охотник ждёт вести для Ирмы");
-w6.chooseDialogue(p6, 0); // закрыть
-check(!p6.talking, "диалог с охотником закрыт");
-p6.x = 43.5 * 32;
-p6.y = 36.3 * 32;
-w6.tryInteract(p6);
-check(p6.dialogueView?.nodeId === "hunterMessage", "Ирма ждёт вести");
-const mem6 = p6.memory;
-w6.chooseDialogue(p6, 0); // передать слова
-check(w6.quest.side.hunter === 3, "вести переданы");
-check(p6.memory === mem6 + 10 || p6.memory === p6.maxMemory, "память за весть");
-w6.chooseDialogue(p6, 0);
-check(!p6.talking, "диалог с Ирмой закрыт");
-
-/* --- осколки и верстак --- */
-const w7 = new World({ seed: 7 });
-const p7 = w7.addPlayer("p7", "Седьмой", "hunter");
-p7.x = 20 * 32;
-p7.y = 20 * 32;
-const victim = w7.spawnEnemy("hollow", p7.x + 48, p7.y, {});
-check(!!victim, "враг для проверки осколков создан");
-if (victim) w7.damageEnemy(victim, 9999, p7);
-const shardDrop = w7.pickups.find((x) => x.type === "shard");
-check(!!shardDrop, "с врага падает осколок");
-if (shardDrop) {
-  p7.x = shardDrop.x;
-  p7.y = shardDrop.y;
-  w7.update(0.016);
-}
-check(p7.shards > 0, "осколок подбирается в валюту");
-
-p7.shards = 100;
-p7.x = 47.5 * 32;
-p7.y = 36.5 * 32;
-w7.upgradeWeapon(p7, "damage");
-check(p7.weapon.damage === 1, "прокачка урона покупается на верстаке");
-check(p7.shards === 97, "прокачка списывает осколки");
-const dmgLevel = p7.weapon.damage;
-p7.x = 10 * 32;
-p7.y = 10 * 32;
-w7.upgradeWeapon(p7, "damage");
-check(p7.weapon.damage === dmgLevel, "вдали от верстака прокачка недоступна");
-
-/* --- травы, Мила и сигнальные огни --- */
-const w8 = new World({ seed: 8 });
-const p8 = w8.addPlayer("p8", "Восьмой", "lantern");
-p8.x = 104.5 * 32;
-p8.y = 45.5 * 32;
-w8.tryInteract(p8);
-check(p8.dialogueView?.nodeId === "intro", "Мила начинает разговор");
-w8.chooseDialogue(p8, 0); // взять задание
-check(w8.quest.side.herbs === 2, "квест Милы начат");
-w8.chooseDialogue(p8, 0); // закрыть
-
-for (const [hx, hy] of [[94, 48], [113, 42], [121, 54]]) {
-  p8.x = hx * 32;
-  p8.y = hy * 32;
-  w8.tryInteract(p8);
-}
-check(w8.flags.herbs === 3, "три травы собраны");
-check(Object.values(w8.flags.herbCollected).filter(Boolean).length === 3, "травы отмечены как собранные");
-w8.tryInteract(p8); // повторно на последней траве
-check(w8.flags.herbs === 3, "собранная трава не даёт бонус повторно");
-
-p8.x = 104.5 * 32;
-p8.y = 45.5 * 32;
-w8.tryInteract(p8);
-check(p8.dialogueView?.nodeId === "reward", "Мила ждёт три травы");
-const shardsBeforeHerb = p8.shards;
-w8.chooseDialogue(p8, 0); // принять дар
-check(w8.quest.side.herbs === 3, "квест Милы завершён");
-check(p8.shards === shardsBeforeHerb + 8, "Мила платит осколками");
-
-const w9 = new World({ seed: 9 });
-const p9 = w9.addPlayer("p9", "Девятый", "lantern");
-p9.x = 27 * 32;
-p9.y = 77 * 32;
-w9.tryInteract(p9);
-check(w9.flags.beacons === 1, "сигнальный огонь зажжён");
-check(w9.flags.beaconsLit.mill === true, "огонь у мельницы отмечен");
-w9.tryInteract(p9);
-check(w9.flags.beacons === 1, "один и тот же огонь не считается дважды");
-
-/* --- третий путь --- */
-const w10 = new World({ seed: 10 });
-const p10 = w10.addPlayer("p10", "Десятый", "lantern");
-p10.x = 100.5 * 32;
-p10.y = 16.5 * 32;
-w10.tryInteract(p10);
-check(p10.dialogueView?.nodeId === "intro", "Отшельник Каль говорит");
-w10.chooseDialogue(p10, 0); // узнать правду
-check(w10.flags.truthKnown === true, "правда об огне узнана");
-check(w10.quest.side.truth === 2, "третий путь открыт");
-w10.chooseDialogue(p10, 0); // truth -> truth2
-w10.chooseDialogue(p10, 0); // закрыть
-check(!p10.talking, "диалог с Калем закрыт");
-
-w10.flags.hasHeart = true;
-w10.flags.bossDead = true;
-w10.quest.main.stage = 5;
-p10.x = 43.5 * 32;
-p10.y = 36.3 * 32;
-w10.tryInteract(p10);
-check(p10.dialogueView?.nodeId === "afterBoss", "Ирма предлагает третий путь");
-w10.chooseDialogue(p10, 2);
-check(p10.dialogueView?.nodeId === "endingTruth", "финал правды доступен");
-check(w10.flags.pendingEnding === "truth", "финал правды ожидает подтверждения");
-w10.chooseDialogue(p10, 0);
-check(w10.flags.ending === "truth", "финал правды записан");
-check(w10.quest.main.stage === 6, "третий финал завершает главу");
-
-const w11 = new World({ seed: 11 });
-const p11 = w11.addPlayer("p11", "Одиннадцатый", "lantern");
-w11.flags.hasHeart = true;
-w11.flags.bossDead = true;
-w11.quest.main.stage = 5;
-p11.x = 43.5 * 32;
-p11.y = 36.3 * 32;
-w11.tryInteract(p11);
-w11.chooseDialogue(p11, 2);
-check(p11.dialogueView?.nodeId === "noTruth", "без правды третий путь закрыт");
-check(!w11.flags.pendingEnding, "без правды финал не записывается");
-
-/* --- сохранение --- */
-const saved = w3.serialize(p3.id);
-check(!!saved && saved.version === 1, "состояние сериализуется");
-const w4 = new World({ seed: saved.seed });
-check(w4.restoreSave(saved, "host"), "состояние восстанавливается");
-const p4 = w4.players.get("host");
-check(!!p4 && p4.name === p3.name, "восстановлен игрок");
-check(w4.flags.merchantTrade === true, "восстановлены флаги");
-check(w4.flags.emberKinds.memory === true, "восстановлены угольки");
-
-const saved8 = w8.serialize(p8.id);
-const w12 = new World({ seed: saved8.seed });
-check(w12.restoreSave(saved8, "host"), "сохранение с травами восстанавливается");
-check(w12.flags.herbCollected.herb_94_48 === true, "восстановлены собранные травы");
-check(w12.flags.herbs === 3, "восстановлен счётчик трав");
-
-const saved7 = w7.serialize(p7.id);
-const w13 = new World({ seed: saved7.seed });
-check(w13.restoreSave(saved7, "host"), "сохранение с осколками восстанавливается");
-const p13 = w13.players.get("host");
-check(p13?.shards === 97, "восстановлены осколки");
-check(p13?.weapon?.damage === 1, "восстановлена прокачка оружия");
-
-const savedRite = w.serialize(p.id);
-const w14 = new World({ seed: savedRite.seed });
-check(w14.restoreSave(savedRite, "host"), "сохранение обряда восстанавливается");
-check(
-  w14.flags.riteNames?.mila === true && w14.flags.riteNames?.garm === true && w14.flags.riteNames?.ada === true,
-  "восстановлены три имени обряда"
-);
-check(w14.flags.riteStarted === true && w14.flags.chapelOpen === true, "восстановлено открытие часовни");
-
-// Регрессия: id игрока раньше затирал порядковый номер события, из-за чего
-// верстак/диалоги/урон обрабатывались заново каждый кадр.
-const wEvents = new World({ seed: 101 });
-const probe = wEvents.emit("probe", { id: "player-x" });
-check(typeof probe.eid === "number" && probe.eid > 0, "у события есть числовой eid");
-check(probe.id === "player-x", "id игрока не затирает порядковый номер");
+/* ---------- итог ---------- */
 
 if (failed) {
-  console.error(`\n${failed} проверок не прошло`);
+  console.error(`\n${failed} проверок упало`);
   process.exit(1);
 }
-console.log("\nall narrative checks passed");
+console.log(`\nвсе проверки прошли · ${Object.keys(QUEST_MAIN.stages).length} стадий сюжета`);

@@ -542,8 +542,21 @@ if (smokeMode === "host") {
   if (!me.dialogueView) throw new Error("диалог с Ирмой не открылся");
   if (!me.dialogueView.choices?.length) throw new Error("в диалоге нет выборов");
   ash.ui.finishTyping();
-  ash.world.chooseDialogue(me, 2);
-  if (ash.world.quest.main.stage !== 1) throw new Error("квест не начался");
+  ash.world.chooseDialogue(me, 0);
+  if (me.talking) ash.world.endDialogue(me);
+  frames(3);
+
+  // Сюжет v0.4 стартует не с Ирмы, а с вечера у постели Лиры.
+  ash.world.startDialogue(me, "daughter", "intro");
+  frames(2);
+  if (me.dialogueView?.nodeId !== "intro") throw new Error("вечер с Лирой не открылся");
+  ash.ui.finishTyping();
+  ash.world.chooseDialogue(me, 0); // сказка
+  ash.world.chooseDialogue(me, 0); // продолжение
+  ash.world.chooseDialogue(me, 0); // к постели
+  ash.world.chooseDialogue(me, 0); // укрыть одеялом
+  if (ash.world.quest.main.stage !== 1) throw new Error("похищение не началось");
+  if (ash.world.daughter.state !== "cage") throw new Error("Лира не попала в клетку");
   if (me.talking) ash.world.endDialogue(me);
   frames(3);
 

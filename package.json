@@ -1,6 +1,6 @@
 {
   "name": "ash-and-heather",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "description": "Пепел и Вереск — кооперативная тёмная сказка о памяти для локальной сети",
   "type": "module",
