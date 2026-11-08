@@ -90,7 +90,7 @@ public class StaticServer extends NanoHTTPD {
       o.put("port", port);
       o.put("wsPort", relay == null ? -1 : relay.getRelayPort());
       o.put("lan", new JSONArray(Lan.addresses()));
-      o.put("version", "0.2.0");
+      o.put("version", "0.3.0");
       o.put("game", "ash-and-heather");
     } catch (Exception e) {
       Log.w(TAG, "status json", e);

@@ -39,6 +39,9 @@ export class World {
       embers: 0,
       emberKinds: { loyalty: false, memory: false, peace: false },
       chapelOpen: false,
+      riteStarted: false,
+      riteReady: false,
+      riteNames: { mila: false, garm: false, ada: false },
       bossActive: false,
       bossDead: false,
       hasHeart: false,
@@ -644,7 +647,7 @@ export class World {
       this.damageEnemy(e, dmg, p);
       hit++;
     }
-    this.emit("slash", { x: p.x, y: p.y, a: p.facing, range: meleeRange, cls: p.cls, hits: hit });
+    this.emit("slash", { owner: p.id, x: p.x, y: p.y, a: p.facing, range: meleeRange, cls: p.cls, hits: hit });
   }
 
   tryAbility(p) {
@@ -809,7 +812,8 @@ export class World {
       if (inter.script === "nameTree" && this.flags.nameChoice) node = "done";
       this.startDialogue(p, inter.script, node);
     } else if (inter.kind === "door") {
-      this.startDialogue(p, "chapelDoor", this.flags.chapelOpen ? "open" : "locked");
+      const node = this.flags.chapelOpen ? "open" : this.flags.riteReady ? "rite" : "locked";
+      this.startDialogue(p, "chapelDoor", node);
     } else if (inter.kind === "shrine") {
       if (!this.flags.shrineBlessed) {
         this.flags.shrineBlessed = true;
@@ -828,7 +832,7 @@ export class World {
       const stage = this.quest.main.stage;
       if (stage === 0) return "intro";
       if (stage === 1) return this.flags.embers >= 3 ? "return" : "wait";
-      if (stage === 2) return "return";
+      if (stage === 2) return this.flags.riteStarted ? "riteWait" : "return";
       if (stage === 3) return "chapelOpen";
       if (stage === 4) return "heartWait";
       if (stage === 5) return "afterBoss";
@@ -845,16 +849,19 @@ export class World {
       return this.flags.merchantTrade ? "done" : "intro";
     }
     if (npc.dialogue === "mila") {
+      if (this.flags.riteStarted && !this.flags.riteNames?.mila) return "rite";
       if (this.quest.side.herbs >= 3) return "done";
       if (this.flags.herbs >= 3) return "reward";
       return this.quest.side.herbs >= 2 ? "wait" : "intro";
     }
     if (npc.dialogue === "garm") {
+      if (this.flags.riteStarted && !this.flags.riteNames?.garm) return "rite";
       if (this.quest.side.beacons >= 3) return "done";
       if (this.flags.beacons >= 3) return "reward";
       return this.quest.side.beacons >= 2 ? "wait" : "intro";
     }
     if (npc.dialogue === "ada") {
+      if (this.flags.riteStarted && !this.flags.riteNames?.ada) return "rite";
       if (this.quest.side.barrows >= 3) return "done";
       if (this.flags.barrows >= 3) return "reward";
       return this.quest.side.barrows >= 2 ? "wait" : "intro";
@@ -1063,6 +1070,42 @@ export class World {
         if (!this.flags.truthKnown) return "noTruth";
         this.flags.pendingEnding = "truth";
         return null;
+      }
+      case "startRite": {
+        if (!this.flags.riteStarted) {
+          this.flags.riteStarted = true;
+          this.emit("quest", {});
+          this.emit("toast", { text: "Имена ждут в Соляной топи, у перевоза и в курганах." });
+        }
+        return null;
+      }
+      case "riteName": {
+        const source = p.dialogue?.scriptId;
+        const names = { mila: "Ильга", garm: "Орен", ada: "Ивар" };
+        if (!names[source] || !this.flags.riteStarted || this.flags.riteNames?.[source]) return null;
+        this.flags.riteNames[source] = true;
+        const count = Object.values(this.flags.riteNames).filter(Boolean).length;
+        p.memory = Math.min(p.maxMemory, p.memory + 8);
+        this.emit("riteName", { id: p.id, x: p.x, y: p.y - 20, name: names[source], count });
+        if (count >= 3) {
+          this.flags.riteReady = true;
+          this.emit("toast", { text: "Ильга. Орен. Ивар. Три имени собраны. Вернись к двери часовни и назови их." });
+          this.emit("quest", {});
+        } else {
+          this.emit("toast", { text: `Имя ${names[source]} сохранено. Имён: ${count}/3.` });
+          this.emit("quest", {});
+        }
+        return null;
+      }
+      case "openChapelRite": {
+        if (!this.flags.riteReady || this.flags.chapelOpen) return null;
+        this.flags.chapelOpen = true;
+        this.map.setChapelOpen(true);
+        this.quest.main.stage = Math.max(this.quest.main.stage, 3);
+        this.emit("riteOpen", { x: 44 * 32, y: 17 * 32 });
+        this.emit("toast", { text: "Дверь часовни открылась. Плакальщик ждёт внутри." });
+        this.emit("quest", {});
+        return "open";
       }
       case "openChapel": {
         if (this.flags.embers >= 3 && !this.flags.chapelOpen) {
@@ -1539,6 +1582,7 @@ export class World {
         emberKinds: { ...this.flags.emberKinds },
         herbCollected: { ...this.flags.herbCollected },
         beaconsLit: { ...this.flags.beaconsLit },
+        riteNames: { ...this.flags.riteNames },
       },
       quest: { main: { ...this.quest.main }, side: { ...this.quest.side } },
       events: this.events.map((e) => ({ ...e })),
@@ -1563,6 +1607,7 @@ export class World {
         emberKinds: { ...this.flags.emberKinds },
         herbCollected: { ...this.flags.herbCollected },
         beaconsLit: { ...this.flags.beaconsLit },
+        riteNames: { ...this.flags.riteNames },
       },
       quest: { main: { ...this.quest.main }, side: { ...this.quest.side } },
       player: {
@@ -1594,6 +1639,7 @@ export class World {
       emberKinds: { ...this.flags.emberKinds, ...(data.flags?.emberKinds || {}) },
       herbCollected: { ...this.flags.herbCollected, ...(data.flags?.herbCollected || {}) },
       beaconsLit: { ...this.flags.beaconsLit, ...(data.flags?.beaconsLit || {}) },
+      riteNames: { ...this.flags.riteNames, ...(data.flags?.riteNames || {}) },
     };
     this.quest = { main: { ...this.quest.main, ...(data.quest?.main || {}) }, side: { ...this.quest.side, ...(data.quest?.side || {}) } };
     this.map.setChapelOpen(!!this.flags.chapelOpen);

@@ -79,6 +79,7 @@ export class UI {
       setReduce: $("set-reduce"), setHints: $("set-hints"),
       controls: $("controls"),
       shards: $("hud-shards"),
+      xp: $("hud-xp"),
       minimap: $("minimap"),
       minimapCanvas: $("minimap-canvas"),
       mapScreen: $("map-screen"),
@@ -203,10 +204,19 @@ export class UI {
 
   placeMarker(e) {
     if (!this.mapTiles || !this.el.mapCanvas || !Number.isFinite(e.clientX) || !Number.isFinite(e.clientY)) return;
-    const rect = this.el.mapCanvas.getBoundingClientRect();
+    const canvas = this.el.mapCanvas;
+    const rect = canvas.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    const rx = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const ry = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+    // Canvas растянут через object-fit: contain — учитываем поля по краям.
+    const aspect = canvas.width / canvas.height;
+    let cw = rect.width;
+    let ch = rect.height;
+    if (rect.width / rect.height > aspect) cw = rect.height * aspect;
+    else ch = rect.width / aspect;
+    const left = rect.left + (rect.width - cw) / 2;
+    const top = rect.top + (rect.height - ch) / 2;
+    const rx = Math.max(0, Math.min(1, (e.clientX - left) / cw));
+    const ry = Math.max(0, Math.min(1, (e.clientY - top) / ch));
     const x = rx * MAP_W * TILE;
     const y = ry * MAP_H * TILE;
     const base = MARKER_TYPES[this.markerType]?.label || "Метка";
@@ -306,40 +316,50 @@ export class UI {
     const px = (x) => x * sx;
     const py = (y) => y * sy;
 
-    // landmarks
-    for (const [key, lm] of Object.entries(scene.landmarks || {})) {
-      if (!lm || !Number.isFinite(lm.x)) continue;
-      const x = px(lm.x);
-      const y = py(lm.y);
-      ctx.fillStyle = "rgba(232,165,75,0.85)";
-      ctx.fillRect(x - 1.2, y - 1.2, 2.4, 2.4);
-      if (big) {
+    // landmarks and detail dots — only on the big map, чтобы мини-карта не рябила
+    if (big) {
+      for (const [key, lm] of Object.entries(scene.landmarks || {})) {
+        if (!lm || !Number.isFinite(lm.x)) continue;
+        const x = px(lm.x);
+        const y = py(lm.y);
+        ctx.fillStyle = "rgba(232,165,75,0.85)";
+        ctx.fillRect(x - 1.2, y - 1.2, 2.4, 2.4);
         const label = lm.label || key;
         ctx.font = "11px Georgia, serif";
         ctx.textAlign = "center";
         ctx.fillStyle = "rgba(230,220,200,0.62)";
         ctx.fillText(label, x, y - 5);
       }
-    }
 
-    // NPC
-    for (const npc of scene.npcs || []) {
-      if (!npc.alive) continue;
-      ctx.fillStyle = "#c9b27a";
-      ctx.beginPath();
-      ctx.arc(px(npc.x), py(npc.y), big ? 3 : 1.8, 0, Math.PI * 2);
-      ctx.fill();
-    }
+      // NPC
+      for (const npc of scene.npcs || []) {
+        if (!npc.alive) continue;
+        ctx.fillStyle = "#c9b27a";
+        ctx.beginPath();
+        ctx.arc(px(npc.x), py(npc.y), 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
-    // enemies
-    for (const e of scene.enemies || []) {
-      if (e.hp <= 0 || e.dormant) continue;
-      const x = px(e.x);
-      const y = py(e.y);
-      ctx.fillStyle = e.boss ? "#ffb0a0" : "rgba(200,90,80,0.9)";
-      ctx.beginPath();
-      ctx.arc(x, y, big ? (e.boss ? 5 : 2.6) : (e.boss ? 3 : 1.6), 0, Math.PI * 2);
-      ctx.fill();
+      // enemies
+      for (const e of scene.enemies || []) {
+        if (e.hp <= 0 || e.dormant) continue;
+        const x = px(e.x);
+        const y = py(e.y);
+        ctx.fillStyle = e.boss ? "#ffb0a0" : "rgba(200,90,80,0.9)";
+        ctx.beginPath();
+        ctx.arc(x, y, e.boss ? 5 : 2.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      // только главные ориентиры
+      for (const key of ["irma", "workbench", "chapel"]) {
+        const lm = scene.landmarks?.[key];
+        if (!lm || !Number.isFinite(lm.x)) continue;
+        ctx.fillStyle = "rgba(232,165,75,0.7)";
+        ctx.beginPath();
+        ctx.arc(px(lm.x), py(lm.y), 1.7, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
 
     // markers
@@ -384,6 +404,16 @@ export class UI {
       ctx.strokeStyle = "rgba(232,165,75,0.2)";
       ctx.lineWidth = 1;
       ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+    } else {
+      const vign = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.28, w / 2, h / 2, Math.max(w, h) * 0.62);
+      vign.addColorStop(0, "rgba(0,0,0,0)");
+      vign.addColorStop(1, "rgba(6,8,12,0.42)");
+      ctx.fillStyle = vign;
+      ctx.fillRect(0, 0, w, h);
+      ctx.font = "bold 12px Inter, sans-serif";
+      ctx.textAlign = "right";
+      ctx.fillStyle = "rgba(230,220,200,0.55)";
+      ctx.fillText("С", w - 9, 16);
     }
   }
 
@@ -584,7 +614,12 @@ export class UI {
     if (!me) return;
     const def = CLASSES[me.cls] || CLASSES.lantern;
     if (this.el.playerName && this.el.playerName.textContent !== me.name) this.el.playerName.textContent = me.name;
-    if (this.el.level) this.el.level.textContent = String(me.level || 1);
+    if (this.el.level) this.el.level.textContent = `ур. ${me.level || 1}`;
+    if (this.el.xp) {
+      const need = 40 + ((me.level || 1) - 1) * 55;
+      const text = `${Math.round(me.xp || 0)}/${need}`;
+      if (this.el.xp.textContent !== text) this.el.xp.textContent = text;
+    }
     if (this.lastClass !== me.cls) {
       this.lastClass = me.cls;
       this.el.sigil.textContent = SIGILS[me.cls] || "ᚨ";
@@ -623,7 +658,16 @@ export class UI {
   updateQuest(scene) {
     const quest = scene.quest;
     if (!quest) return;
-    const main = QUEST_MAIN.stages[quest.main?.stage] || "";
+    let main = QUEST_MAIN.stages[quest.main?.stage] || "";
+    if (quest.main?.stage === 2 && scene.flags?.riteStarted) {
+      if (scene.flags?.riteReady) {
+        main = "Вернуться к двери часовни и назвать три имени.";
+      } else {
+        const names = scene.flags.riteNames || {};
+        const count = Object.values(names).filter(Boolean).length;
+        main = `Собрать три имени для часовни: Мила, Гарм, Ада (${count}/3).`;
+      }
+    }
     if (this.el.questMain && this.el.questMain.textContent !== main) this.el.questMain.textContent = main;
     const side = [];
     const pushStage = (key, done) => {
@@ -638,6 +682,11 @@ export class UI {
     pushStage("beacons", (s) => s >= 3);
     pushStage("barrows", (s) => s >= 3);
     pushStage("truth", (s) => s >= 2);
+    const me = scene.players?.find((p) => p.id === scene.myId) || scene.players?.[0];
+    const hasUpgrade = me && Object.values(me.weapon || {}).some((v) => v > 0);
+    if (me && (me.shards || 0) > 0 && !hasUpgrade) {
+      side.unshift(`◆ ${me.shards}: улучшить оружие на верстаке у последнего очага.`);
+    }
     const sig = side.join("|");
     if (this.el.questSide && this.questSideSig !== sig) {
       this.questSideSig = sig;

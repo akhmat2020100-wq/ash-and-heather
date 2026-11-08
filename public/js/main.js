@@ -48,13 +48,15 @@ let saveTimer = 0;
 let snapTimer = 0;
 let hostDbgTimer = 1;
 let moveTimer = 0;
-let holdTimer = 0;
 let hitSoundTimer = 0;
 let tipTimer = 0;
 let tipIndex = 0;
 let lastSentMove = { x: 0, y: 0 };
 let markers = [];
 let markerSeed = null;
+let slashFxAt = new Map();
+let lastHitFloaterAt = 0;
+let shardHinted = false;
 
 /* ---------- настройки и сохранение ---------- */
 function loadSettings() {
@@ -271,12 +273,14 @@ function resetSessionState() {
   roomAddress = "";
   snapTimer = 0;
   moveTimer = 0;
-  holdTimer = 0;
   tipTimer = 0;
   lastSentMove = { x: 0, y: 0 };
   lastShootSoundAt = 0;
   lastHitSoundAt = 0;
   lastSlashSoundAt = 0;
+  slashFxAt.clear();
+  lastHitFloaterAt = 0;
+  shardHinted = false;
   ui.closeMap();
   ui.closeWorkbench();
   renderer.clearEffects();
@@ -664,7 +668,6 @@ const input = new Input({
       return;
     }
     sendAction(action);
-    if (action === "attack") holdTimer = 0.28;
   },
   onPause: () => {
     if (!running || gameEnded) return;
@@ -791,16 +794,6 @@ function tick(dt) {
     }
   } else if (world && myId) {
     world.setMove(myId, mv.x, mv.y);
-  }
-
-  if (canControl && input.isHeld("attack")) {
-    holdTimer -= dt;
-    if (holdTimer <= 0) {
-      sendAction("attack");
-      holdTimer = 0.16;
-    }
-  } else {
-    holdTimer = 0;
   }
 
   if ((mode === "solo" || mode === "host") && world) {
@@ -1014,27 +1007,63 @@ function routeEvent(e) {
     case "toast":
       ui.toast(e.text);
       break;
+    case "shards": {
+      renderer.addBurst("particle", e.x, e.y, { color: "#ffe6bd", count: e.isQuest ? 12 : 6, speed: 45, lift: 28, ttl: 0.45 });
+      if (e.id === myId) {
+        audio.play("shard");
+        if (!shardHinted) {
+          shardHinted = true;
+          ui.toast("Осколки — плата за прокачку. Верстак стоит у последнего очага, рядом с Ирмой.");
+        }
+      }
+      break;
+    }
+    case "riteName": {
+      renderer.addBurst("particle", e.x, e.y, { color: "#d7e8c8", count: 16, speed: 55, lift: 34, ttl: 0.7 });
+      renderer.addFloater(e.x, e.y - 8, e.name, "#d7e8c8", true);
+      if (e.id === myId) audio.play("memory");
+      break;
+    }
+    case "riteOpen": {
+      renderer.addBurst("particle", e.x, e.y - 10, { color: "#ffe6bd", count: 28, speed: 70, lift: 40, ttl: 0.9 });
+      renderer.addFloater(e.x, e.y - 30, "Ильга · Орен · Ивар", "#ffe6bd", true);
+      renderer.shake(3);
+      audio.play("ember");
+      break;
+    }
     case "dialogue":
     case "dialogueAdvance":
       audio.play("dialogue");
       break;
-    case "hit":
-      renderer.addBurst("hit", e.x, e.y, { color: e.boss ? "#a9d3ef" : "#d08a7a", count: e.boss ? 9 : 5 });
-      if (e.elite || e.boss || e.amount >= 16) {
+    case "hit": {
+      const now = performance.now();
+      renderer.addBurst("hit", e.x, e.y, { color: e.boss ? "#a9d3ef" : "#d08a7a", count: e.boss ? 9 : 4 });
+      // Не сыплем одинаковыми цифрами, когда один взмах задел нескольких врагов.
+      if (e.elite || e.boss || (e.amount >= 16 && now - lastHitFloaterAt > 120)) {
+        lastHitFloaterAt = now;
         renderer.addFloater(e.x, e.y - 22, `−${e.amount}`, e.boss ? "#cfe4f4" : "#f0c8b8", e.boss);
       }
-      if (performance.now() - lastHitSoundAt > 55) {
-        lastHitSoundAt = performance.now();
+      if (now - lastHitSoundAt > 55) {
+        lastHitSoundAt = now;
         audio.play("hit");
       }
       break;
-    case "slash":
+    }
+    case "slash": {
+      const now = performance.now();
+      // Страховка от повторной обработки одного и того же удара.
+      if (e.time != null) {
+        const key = e.owner || `${Math.round(e.x)}:${Math.round(e.y)}`;
+        if (slashFxAt.get(key) === e.time) break;
+        slashFxAt.set(key, e.time);
+      }
       renderer.addBurst("slash", e.x, e.y, { a: e.a, range: e.range, cls: e.cls });
-      if (performance.now() - lastSlashSoundAt > 55) {
-        lastSlashSoundAt = performance.now();
+      if (now - lastSlashSoundAt > 55) {
+        lastSlashSoundAt = now;
         audio.play("slash");
       }
       break;
+    }
     case "shoot":
       renderer.addBurst("particle", e.x + Math.cos(e.a) * 14, e.y + Math.sin(e.a) * 14, {
         a: e.a, spread: 0.5, speed: 60, color: "#d7e8c8", count: 3, ttl: 0.25,
@@ -1248,6 +1277,7 @@ function boot() {
     get myId() { return myId; },
     get latestSnap() { return latestSnap; },
     get running() { return running; },
+    input,
     renderer,
     ui,
     audio,

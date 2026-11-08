@@ -38,10 +38,46 @@ w.tryInteract(p);
 check(p.dialogueView?.nodeId === "return", "Ирма ждёт у часовни");
 console.log("irma node", p.dialogueView?.nodeId);
 check(w.map.isBlocked(44 * 32, 17 * 32, 10), "дверь часовни запечатана");
-w.chooseDialogue(p, 0); // open chapel
-check(w.flags.chapelOpen, "дверь часовни открыта");
+w.chooseDialogue(p, 0); // начать обряд имён
+check(w.flags.riteStarted, "Ирма просит собрать три имени");
+check(!w.flags.chapelOpen, "дверь ещё запечатана без имён");
+
+p.x = 104.5 * 32;
+p.y = 45.5 * 32;
+w.tryInteract(p);
+check(p.dialogueView?.nodeId === "rite", "Мила хранит первое имя");
+w.chooseDialogue(p, 0);
+check(w.flags.riteNames.mila, "имя Ильги сохранено");
+
+p.x = 113.5 * 32;
+p.y = 53.5 * 32;
+w.tryInteract(p);
+check(p.dialogueView?.nodeId === "rite", "Гарм хранит второе имя");
+w.chooseDialogue(p, 0);
+check(w.flags.riteNames.garm, "имя Орена сохранено");
+
+p.x = 72 * 32;
+p.y = 80 * 32;
+w.tryInteract(p);
+check(p.dialogueView?.nodeId === "rite", "Ада хранит третье имя");
+w.chooseDialogue(p, 0);
+check(w.flags.riteNames.ada, "имя Ивара сохранено");
+check(w.flags.riteReady, "три имени собраны");
+check(!w.flags.chapelOpen, "дверь ждёт имена у порога");
+check(w.map.isBlocked(44 * 32, 17 * 32, 10), "дверь ещё запечатана");
+check(w.quest.main.stage === 2, "квест всё ещё ведёт к дверям");
+
+p.x = 44 * 32;
+p.y = 18.5 * 32;
+w.tryInteract(p);
+check(p.dialogueView?.nodeId === "rite", "дверь просит назвать имена");
+w.chooseDialogue(p, 0); // назвать имена
+check(w.flags.chapelOpen, "три имени открыли дверь часовни");
+check(p.dialogueView?.nodeId === "open", "дверь открывается в часовню");
 check(!w.map.isBlocked(44 * 32, 17 * 32, 10), "проход в часовню открыт");
 check(w.quest.main.stage === 3, "квест перешёл к боссу");
+w.chooseDialogue(p, 0); // закрыть диалог двери
+check(!p.talking, "диалог у двери закрыт");
 console.log("chapel", w.flags.chapelOpen, "stage", w.quest.main.stage);
 
 p.x = 44 * 32;
@@ -300,6 +336,15 @@ check(w13.restoreSave(saved7, "host"), "сохранение с осколкам
 const p13 = w13.players.get("host");
 check(p13?.shards === 97, "восстановлены осколки");
 check(p13?.weapon?.damage === 1, "восстановлена прокачка оружия");
+
+const savedRite = w.serialize(p.id);
+const w14 = new World({ seed: savedRite.seed });
+check(w14.restoreSave(savedRite, "host"), "сохранение обряда восстанавливается");
+check(
+  w14.flags.riteNames?.mila === true && w14.flags.riteNames?.garm === true && w14.flags.riteNames?.ada === true,
+  "восстановлены три имени обряда"
+);
+check(w14.flags.riteStarted === true && w14.flags.chapelOpen === true, "восстановлено открытие часовни");
 
 if (failed) {
   console.error(`\n${failed} проверок не прошло`);

@@ -10,10 +10,22 @@ export class AudioEngine {
     this.musicVol = 0.55;
     this.sfxVol = 0.75;
     this.unlocked = false;
-    this.bellTimer = 12;
+    this.bellTimer = 9;
     this.started = false;
     this.lastShotAt = -1;
     this.voices = 0;
+    // Тёплая гармоническая подложка: аккорды в до-мажоре с редкими колокольчиками.
+    this.chordTimer = 0;
+    this.chordIndex = 0;
+    this.chordLen = 9.5;
+    this.chords = [
+      [130.81, 196.0, 246.94, 329.63], // Cmaj7
+      [110.0, 164.81, 196.0, 261.63], // Am7
+      [87.31, 130.81, 164.81, 220.0], // Fmaj7
+      [98.0, 146.83, 196.0, 293.66], // G6
+      [130.81, 196.0, 261.63, 392.0], // C
+    ];
+    this.chimeScale = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5];
   }
 
   unlock() {
@@ -69,57 +81,102 @@ export class AudioEngine {
     this.started = true;
     const ctx = this.ctx;
     const now = ctx.currentTime;
-    // wind
-    const wind = ctx.createBufferSource();
-    wind.buffer = this.noiseBuf;
-    wind.loop = true;
-    const windFilter = ctx.createBiquadFilter();
-    windFilter.type = "lowpass";
-    windFilter.frequency.value = 420;
-    windFilter.Q.value = 0.8;
-    const windGain = ctx.createGain();
-    windGain.gain.value = 0.055;
-    wind.connect(windFilter);
-    windFilter.connect(windGain);
-    windGain.connect(this.musicGain);
-    const lfo = ctx.createOscillator();
-    lfo.frequency.value = 0.045;
-    const lfoGain = ctx.createGain();
-    lfoGain.gain.value = 180;
-    lfo.connect(lfoGain);
-    lfoGain.connect(windFilter.frequency);
-    wind.start(now);
-    lfo.start(now);
 
-    // low drone
-    const droneGain = ctx.createGain();
-    droneGain.gain.value = 0.022;
-    const droneFilter = ctx.createBiquadFilter();
-    droneFilter.type = "lowpass";
-    droneFilter.frequency.value = 260;
-    droneGain.connect(droneFilter);
-    droneFilter.connect(this.musicGain);
-    for (const [freq, detune, gain] of [[55, 0, 0.5], [82.4, 4, 0.3], [110, -3, 0.18], [164.8, 7, 0.07]]) {
+    // Мягкий воздух вместо ветра: почти неслышный шум с медленным дыханием.
+    const air = ctx.createBufferSource();
+    air.buffer = this.noiseBuf;
+    air.loop = true;
+    const airFilter = ctx.createBiquadFilter();
+    airFilter.type = "lowpass";
+    airFilter.frequency.value = 1400;
+    airFilter.Q.value = 0.35;
+    const airGain = ctx.createGain();
+    airGain.gain.value = 0.008;
+    air.connect(airFilter);
+    airFilter.connect(airGain);
+    airGain.connect(this.musicGain);
+    const airLfo = ctx.createOscillator();
+    airLfo.frequency.value = 0.055;
+    const airLfoGain = ctx.createGain();
+    airLfoGain.gain.value = 380;
+    airLfo.connect(airLfoGain);
+    airLfoGain.connect(airFilter.frequency);
+    air.start(now);
+    airLfo.start(now);
+
+    // Тёплый низ: две тихие синусоиды, чтобы аккорды не висели в пустоте.
+    const bassGain = ctx.createGain();
+    bassGain.gain.value = 0.012;
+    const bassFilter = ctx.createBiquadFilter();
+    bassFilter.type = "lowpass";
+    bassFilter.frequency.value = 240;
+    bassGain.connect(bassFilter);
+    bassFilter.connect(this.musicGain);
+    for (const [freq, gain] of [[65.41, 0.5], [98.0, 0.28]]) {
       const o = ctx.createOscillator();
       o.type = "sine";
       o.frequency.value = freq;
-      o.detune.value = detune;
       const g = ctx.createGain();
       g.gain.value = gain;
       o.connect(g);
-      g.connect(droneGain);
+      g.connect(bassGain);
       o.start(now);
     }
     const breath = ctx.createOscillator();
-    breath.frequency.value = 0.06;
+    breath.frequency.value = 0.045;
     const breathGain = ctx.createGain();
-    breathGain.gain.value = 0.008;
+    breathGain.gain.value = 0.004;
     breath.connect(breathGain);
-    breathGain.connect(droneGain.gain);
+    breathGain.connect(bassGain.gain);
     breath.start(now);
 
-    this.windGain = windGain;
-    this.droneGain = droneGain;
+    this.airGain = airGain;
+    this.bassGain = bassGain;
+    this.chordTimer = this.chordLen;
+    this.bellTimer = 7;
+    this.playChord();
+  }
+
+  playChord() {
+    if (!this.unlocked) return;
+    const ctx = this.ctx;
+    const t = ctx.currentTime;
+    const freqs = this.chords[this.chordIndex % this.chords.length];
+    this.chordIndex++;
+    const dur = 15.5;
+    for (let i = 0; i < freqs.length; i++) {
+      const freq = freqs[i];
+      const o = ctx.createOscillator();
+      o.type = "sine";
+      o.frequency.value = freq;
+      o.detune.value = (Math.random() - 0.5) * 7;
+      const shimmer = ctx.createOscillator();
+      shimmer.type = "triangle";
+      shimmer.frequency.value = freq * 2;
+      shimmer.detune.value = (Math.random() - 0.5) * 6;
+      const shimmerGain = ctx.createGain();
+      shimmerGain.gain.value = 0.16;
+      const filter = ctx.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 760 + i * 120;
+      filter.Q.value = 0.3;
+      const g = ctx.createGain();
+      const peak = 0.0135 - i * 0.0015;
+      const attack = 3.4 + Math.random() * 0.8;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(Math.max(0.0002, peak), t + attack);
+      g.gain.setValueAtTime(Math.max(0.0002, peak), t + dur - 3.6);
+      g.gain.linearRampToValueAtTime(0.0001, t + dur);
+      o.connect(filter);
+      shimmer.connect(shimmerGain);
+      shimmerGain.connect(filter);
+      filter.connect(g);
+      g.connect(this.musicGain);
+      o.start(t);
+      shimmer.start(t);
+      o.stop(t + dur + 0.1);
+      shimmer.stop(t + dur + 0.1);
+    }
   }
 
   setMusic(v) {
@@ -179,19 +236,27 @@ export class AudioEngine {
 
   update(dt) {
     if (!this.unlocked || this.musicVol <= 0.01) return;
+    this.chordTimer -= dt;
+    if (this.chordTimer <= 0) {
+      this.chordTimer = this.chordLen;
+      this.playChord();
+    }
     this.bellTimer -= dt;
     if (this.bellTimer <= 0) {
-      this.bellTimer = 28 + Math.random() * 38;
+      this.bellTimer = 11 + Math.random() * 15;
       this.bell();
     }
   }
 
   bell() {
     if (!this.unlocked) return;
-    const base = 196 * (Math.random() < 0.5 ? 1 : 1.5);
-    this.tone({ freq: base, type: "sine", dur: 5.5, gain: 0.028, attack: 0.02, dest: this.musicGain });
-    this.tone({ freq: base * 2.01, type: "sine", dur: 4, gain: 0.012, attack: 0.02, delay: 0.03, dest: this.musicGain });
-    this.tone({ freq: base * 2.98, type: "sine", dur: 2.6, gain: 0.006, attack: 0.02, delay: 0.06, dest: this.musicGain });
+    const base = this.chimeScale[(Math.random() * this.chimeScale.length) | 0];
+    const notes = Math.random() < 0.4 ? 2 : 1;
+    for (let i = 0; i < notes; i++) {
+      const freq = i === 0 ? base : base * (Math.random() < 0.5 ? 1.125 : 1.25);
+      this.tone({ freq, type: "sine", dur: 3.4 - i * 0.4, gain: 0.012 - i * 0.003, attack: 0.03, delay: i * 0.32, dest: this.musicGain });
+      this.tone({ freq: freq * 2.005, type: "sine", dur: 2.2 - i * 0.3, gain: 0.004, attack: 0.03, delay: 0.06 + i * 0.32, dest: this.musicGain });
+    }
   }
 
   play(name, opts = {}) {

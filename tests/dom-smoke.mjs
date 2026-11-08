@@ -316,6 +316,16 @@ function key(code, type = "keydown") {
   });
 }
 
+function fireEl(el, type, props = {}) {
+  const ev = {
+    type,
+    target: el,
+    preventDefault() {},
+    ...props,
+  };
+  for (const fn of [...(el.listeners[type] || [])]) fn(ev);
+}
+
 frames(5);
 if (!windowStub.__ASH__) throw new Error("__ASH__ не создан");
 
@@ -407,6 +417,32 @@ if (smokeMode === "host") {
   frames(3);
   if (me.attackAnim <= 0 && me.attackCd <= 0) throw new Error("удар не сработал");
   key("Space", "keyup");
+
+  // Регрессия: удар строго один на нажатие, удержание не повторяет атаку.
+  const attackButton = dataAction.find((el) => el.dataset.action === "attack");
+  if (!attackButton) throw new Error("нет кнопки удара");
+  const startEventId = ash.world.eventId;
+  const slashCount = () =>
+    ash.world.events.filter((e) => e.type === "slash" && e.id >= startEventId).length;
+  me.cooldown = 0;
+  fireEl(attackButton, "pointerdown", { pointerId: 101 });
+  frames(2);
+  if (slashCount() !== 1)
+    throw new Error(`на нажатие пришло ${slashCount()} ударов вместо 1`);
+  frames(60);
+  if (slashCount() !== 1) throw new Error("удержание кнопки повторяет удар");
+  fireEl(attackButton, "pointerdown", { pointerId: 102 });
+  frames(2);
+  if (slashCount() !== 1) throw new Error("повторный pointerdown продублировал удар");
+  fireEl(attackButton, "pointerup", { pointerId: 101 });
+  frames(30);
+  if (slashCount() !== 1) throw new Error("после отпускания удар повторился");
+  me.cooldown = 0;
+  fireEl(attackButton, "pointerdown", { pointerId: 103 });
+  frames(2);
+  if (slashCount() !== 2) throw new Error("второе нажатие не дало удар");
+  windowStub.dispatchEvent({ type: "touchend", target: attackButton, preventDefault() {} });
+  if (attackButton.classList.contains("pressed")) throw new Error("touchend не отпустил кнопку");
 
   const irma = ash.world.map.landmarks.irma;
   me.x = irma.x + 12;

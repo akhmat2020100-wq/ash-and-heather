@@ -44,6 +44,10 @@ export class Renderer {
     this.markers = [];
     this.shakeAmt = 0;
     this.shakeT = 0;
+    this.playerTrails = new Map();
+    this.playerPrev = new Map();
+    this.playerSpeed = new Map();
+    this.projTrails = new Map();
     this.lightCanvas = document.createElement("canvas");
     this.lightCtx = this.lightCanvas.getContext("2d");
     this.resize();
@@ -71,6 +75,10 @@ export class Renderer {
     this.effects.length = 0;
     this.floaters.length = 0;
     this.ambient.length = 0;
+    this.playerTrails.clear();
+    this.playerPrev.clear();
+    this.playerSpeed.clear();
+    this.projTrails.clear();
   }
 
   shake(amount) {
@@ -143,7 +151,7 @@ export class Renderer {
         continue;
       }
       e.t += dt;
-      if (e.kind === "particle") {
+      if (e.kind === "particle" || e.kind === "dust") {
         if (!Number.isFinite(e.x) || !Number.isFinite(e.y) || !Number.isFinite(e.vx) || !Number.isFinite(e.vy)) {
           this.effects.splice(i, 1);
           continue;
@@ -176,6 +184,60 @@ export class Renderer {
     const k = 1 - Math.pow(0.0016, dt);
     this.cam.x = lerp(this.cam.x, tx, k);
     this.cam.y = lerp(this.cam.y, ty, k);
+
+    // Следы движения, пыль из-под ног и шлейфы снарядов.
+    if (scene) {
+      for (const p of scene.players || []) {
+        const prev = this.playerPrev.get(p.id);
+        const moved = prev ? Math.hypot(p.x - prev.x, p.y - prev.y) : 0;
+        const speed = prev ? moved / Math.max(dt, 0.001) : 0;
+        this.playerPrev.set(p.id, { x: p.x, y: p.y });
+        this.playerSpeed.set(p.id, speed);
+        let tr = this.playerTrails.get(p.id);
+        if (!tr) {
+          tr = [];
+          this.playerTrails.set(p.id, tr);
+        }
+        const last = tr[tr.length - 1];
+        if (!last || this.time - last.t >= 0.055) {
+          tr.push({ x: p.x, y: p.y, cls: p.cls, t: this.time });
+          if (tr.length > 10) tr.shift();
+        }
+        while (tr.length && this.time - tr[0].t > 0.6) tr.shift();
+        if (!this.reduced && speed > 40 && !p.dodge && Math.random() < dt * 8) {
+          this.effects.push({
+            kind: "dust",
+            x: p.x + (Math.random() - 0.5) * 7,
+            y: p.y + 5 + Math.random() * 2,
+            vx: (Math.random() - 0.5) * 14,
+            vy: -4 - Math.random() * 7,
+            r: 1.2 + Math.random() * 1.7,
+            color: "#8c8069",
+            t: 0,
+            ttl: 0.32 + Math.random() * 0.24,
+            gravity: 8,
+          });
+        }
+      }
+      const seen = new Set();
+      for (const pr of scene.projectiles || []) {
+        seen.add(pr.id);
+        let tr = this.projTrails.get(pr.id);
+        if (!tr) {
+          tr = [];
+          this.projTrails.set(pr.id, tr);
+        }
+        const last = tr[tr.length - 1];
+        if (!last || Math.hypot(pr.x - last.x, pr.y - last.y) > 2.2 || this.time - last.t > 0.12) {
+          tr.push({ x: pr.x, y: pr.y, t: this.time });
+          if (tr.length > 9) tr.shift();
+        }
+        while (tr.length && this.time - tr[0].t > 0.24) tr.shift();
+      }
+      for (const id of [...this.projTrails.keys()]) {
+        if (!seen.has(id)) this.projTrails.delete(id);
+      }
+    }
 
     if (!this.reduced) {
       const spawn = dt * (this.ambient.length < 60 ? 14 : 0);
@@ -868,6 +930,15 @@ Renderer.prototype.drawProp = function (ctx, p, scene) {
       ctx.beginPath();
       ctx.arc(p.x - 3, p.y - 21, 1.6, 0, TAU);
       ctx.fill();
+      const me = scene?.players?.find((pl) => pl.id === scene.myId) || scene?.players?.[0];
+      if (me && Math.hypot(me.x - p.x, me.y - p.y) < 120) {
+        ctx.globalAlpha = 0.9;
+        ctx.font = "11px Georgia, serif";
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#ffd18a";
+        ctx.fillText("Верстак · осколки", p.x, p.y - 32);
+        ctx.globalAlpha = 1;
+      }
       ctx.restore();
       break;
     }
@@ -1126,10 +1197,32 @@ Renderer.prototype.drawPlayer = function (ctx, p, myId, scene) {
     ctx.restore();
     return;
   }
-  const moving = p.input ? Math.hypot(p.input.mx || 0, p.input.my || 0) > 0.1 : false;
+  const moving = (this.playerSpeed.get(p.id) || 0) > 24 || (p.input ? Math.hypot(p.input.mx || 0, p.input.my || 0) > 0.1 : false);
   const bob = moving ? Math.sin(t * 10) * 1.2 : Math.sin(t * 2 + p.x) * 0.6;
   const alpha = p.hitFlash > 0 ? 0.62 : 1;
   ctx.globalAlpha = alpha;
+
+  // Послеобразы рывка.
+  if (p.dodge) {
+    const trail = this.playerTrails.get(p.id) || [];
+    for (const ghost of trail) {
+      const age = this.time - ghost.t;
+      if (age > 0.38) continue;
+      const a = (1 - age / 0.38) * 0.26;
+      if (a <= 0.01) continue;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = def.cloak;
+      ctx.beginPath();
+      ctx.ellipse(ghost.x, ghost.y - 9, 8.5, 13.5, 0, 0, TAU);
+      ctx.fill();
+      ctx.fillStyle = def.color;
+      ctx.beginPath();
+      ctx.arc(ghost.x, ghost.y - 19, 4.6, 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalAlpha = alpha;
+  }
+
   this.drawShadow(ctx, p.x, p.y + 6, 11, 4.5, 0.45);
 
   if (p.invuln && p.id !== myId) {
@@ -1245,12 +1338,30 @@ Renderer.prototype.drawPlayer = function (ctx, p, myId, scene) {
 
   if (p.attackAnim > 0) {
     const progress = 1 - clamp(p.attackAnim / 0.22, 0, 1);
-    const a0 = facing - 0.9 + progress * 1.4;
-    ctx.strokeStyle = `rgba(255,220,170,${0.5 * (1 - progress)})`;
-    ctx.lineWidth = 2.2;
+    const a0 = facing - 1.02 + progress * 1.5;
+    const radius = p.cls === "executioner" ? 35 : p.cls === "hunter" ? 30 : 27;
+    const hue = p.cls === "executioner" ? "255,176,143" : p.cls === "hunter" ? "215,232,200" : "255,217,154";
+    ctx.globalAlpha = 0.5 * (1 - progress);
+    ctx.strokeStyle = `rgba(${hue},0.7)`;
+    ctx.lineWidth = 5;
+    ctx.lineCap = "round";
     ctx.beginPath();
-    ctx.arc(p.x, p.y - 6, p.cls === "executioner" ? 34 : 27, a0, a0 + 0.9);
+    ctx.arc(p.x, p.y - 6, radius, a0, a0 + 0.95);
     ctx.stroke();
+    ctx.globalAlpha = 0.9 * (1 - progress);
+    ctx.strokeStyle = `rgba(${hue},1)`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y - 6, radius + 1.5, a0 + 0.58, a0 + 0.98);
+    ctx.stroke();
+    // искра на острие
+    const tipA = a0 + 0.96;
+    ctx.globalAlpha = (1 - progress) * 0.9;
+    ctx.fillStyle = `rgba(${hue},1)`;
+    ctx.beginPath();
+    ctx.arc(p.x + Math.cos(tipA) * radius, p.y - 6 + Math.sin(tipA) * radius, 1.8, 0, TAU);
+    ctx.fill();
+    ctx.globalAlpha = alpha;
   }
 
   if (p.talking) {
@@ -1740,6 +1851,22 @@ Renderer.prototype.drawPickup = function (ctx, p) {
 
 Renderer.prototype.drawProjectile = function (ctx, p) {
   ctx.save();
+  const trail = this.projTrails.get(p.id) || [];
+  if (trail.length > 1) {
+    const rgb = p.type === "tear" ? "140,190,225" : p.type === "pierce" ? "170,220,180" : "201,178,138";
+    for (const pt of trail) {
+      const age = this.time - pt.t;
+      if (age > 0.24) continue;
+      const a = (1 - age / 0.24) * 0.3;
+      if (a <= 0.01) continue;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = `rgb(${rgb})`;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, (p.type === "tear" ? 3.2 : 1.9) * (1 - age / 0.32), 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
   if (p.type === "tear") {
     ctx.fillStyle = "rgba(140,190,225,0.2)";
     ctx.beginPath();
@@ -1794,7 +1921,14 @@ Renderer.prototype.drawEffects = function (ctx) {
   for (const e of this.effects) {
     const k = clamp(1 - e.t / e.ttl, 0, 1);
     ctx.save();
-    if (e.kind === "particle") {
+    if (e.kind === "dust") {
+      const r = e.r * (1 + (1 - k) * 1.6);
+      ctx.globalAlpha = k * 0.3;
+      ctx.fillStyle = e.color;
+      ctx.beginPath();
+      ctx.ellipse(e.x, e.y, r, r * 0.6, 0, 0, TAU);
+      ctx.fill();
+    } else if (e.kind === "particle") {
       ctx.globalAlpha = k;
       ctx.fillStyle = e.color;
       ctx.beginPath();
@@ -1810,6 +1944,12 @@ Renderer.prototype.drawEffects = function (ctx) {
       ctx.stroke();
       ctx.globalAlpha = k * 0.25;
       ctx.lineWidth = 9;
+      ctx.stroke();
+      ctx.globalAlpha = k * 0.95;
+      ctx.strokeStyle = "rgba(255,246,220,0.9)";
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.arc(e.x, e.y - 6, e.range + 2, e.a + 0.34, e.a + 0.78);
       ctx.stroke();
     } else if (e.kind === "nova") {
       const r = e.radius * (1 - k * 0.4);
@@ -2003,8 +2143,22 @@ Renderer.prototype.drawObjective = function (ctx, scene, opts) {
           target = missing[0];
         } else target = lm.irma;
       }
-    } else if (stage === 2) target = lm.irma;
-    else if (stage === 3 || stage === 4) target = lm.chapel;
+    } else if (stage === 2) {
+      if (flags.riteStarted) {
+        if (flags.riteReady) {
+          target = lm.chapel;
+        } else {
+          const me = scene.players?.find((p) => p.id === scene.myId) || scene.players?.[0];
+          const remaining = ["mila", "garm", "ada"].filter((k) => !flags.riteNames?.[k]);
+          const npcs = (scene.npcs || []).filter((n) => remaining.includes(n.id));
+          if (me && npcs.length) {
+            npcs.sort((a, b) => Math.hypot(a.x - me.x, a.y - me.y) - Math.hypot(b.x - me.x, b.y - me.y));
+            target = npcs[0];
+          } else if (npcs.length) target = npcs[0];
+          else target = lm.irma;
+        }
+      } else target = lm.irma;
+    } else if (stage === 3 || stage === 4) target = lm.chapel;
     else if (stage === 5) target = lm.irma;
   }
   if (!target) return;
@@ -2069,6 +2223,36 @@ Renderer.prototype.drawObjective = function (ctx, scene, opts) {
     }
     ctx.restore();
   }
+  this.drawWorkbenchHint(ctx, scene);
+};
+
+Renderer.prototype.drawWorkbenchHint = function (ctx, scene) {
+  const me = scene.players?.find((p) => p.id === scene.myId) || scene.players?.[0];
+  const bench = scene.landmarks?.workbench;
+  if (!me || !bench || !(me.shards > 0)) return;
+  const weapon = me.weapon || {};
+  if (Object.values(weapon).some((v) => v > 0)) return;
+  if ((scene.quest?.main?.stage ?? 0) > 2) return;
+  const s = this.worldToScreen(bench.x, bench.y);
+  if (s.x < 40 || s.x > this.w - 40 || s.y < 40 || s.y > this.h - 40) return;
+  const pulse = 0.6 + Math.sin(this.time * 3) * 0.25;
+  ctx.save();
+  ctx.globalAlpha = pulse;
+  ctx.strokeStyle = "rgba(232,165,75,0.8)";
+  ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  ctx.arc(bench.x, bench.y - 8, 15 + Math.sin(this.time * 2.6) * 2, 0, TAU);
+  ctx.stroke();
+  ctx.translate(bench.x, bench.y - 38 - Math.sin(this.time * 2.2) * 3);
+  ctx.rotate(Math.PI / 4);
+  ctx.fillStyle = "rgba(255,209,138,0.9)";
+  ctx.fillRect(-3, -3, 6, 6);
+  ctx.rotate(-Math.PI / 4);
+  ctx.font = "10px Inter, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(255,220,170,0.85)";
+  ctx.fillText("верстак", 0, 16);
+  ctx.restore();
 };
 
 Renderer.prototype.drawAmbient = function (ctx) {

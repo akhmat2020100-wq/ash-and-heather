@@ -28,27 +28,45 @@ export class Input {
     this._onKeyUp = this.handleKeyUp.bind(this);
     this._onBlur = this.reset.bind(this);
     this._onPointerRelease = this.releasePointer.bind(this);
+    this._onReleaseAll = this.releaseAll.bind(this);
     window.addEventListener("keydown", this._onKeyDown);
     window.addEventListener("keyup", this._onKeyUp);
     window.addEventListener("blur", this._onBlur);
     window.addEventListener("pointerup", this._onPointerRelease, true);
     window.addEventListener("pointercancel", this._onPointerRelease, true);
+    // Страховка для WebView: если pointerup потерялся, кнопки не залипают.
+    window.addEventListener("mouseup", this._onReleaseAll, true);
+    window.addEventListener("touchend", this._onReleaseAll, true);
+    window.addEventListener("touchcancel", this._onReleaseAll, true);
     this.bindJoystick();
     this.bindButtons();
   }
 
   releasePointer(e) {
-    const action = this.pointerActions.get(e.pointerId);
-    if (!action) return;
-    this.pointerActions.delete(e.pointerId);
+    const id = e?.pointerId;
+    if (id == null) {
+      this.releaseAll();
+      return;
+    }
+    const rec = this.pointerActions.get(id);
+    if (!rec) return;
+    if (rec.timer) clearTimeout(rec.timer);
+    this.pointerActions.delete(id);
     // Другой палец может всё ещё держать ту же кнопку.
     for (const other of this.pointerActions.values()) {
-      if (other === action) return;
+      if (other.action === rec.action) return;
     }
-    this.held.delete(action);
-    for (const [el, a] of this.buttons || []) {
-      if (a === action) el.classList.remove("pressed");
+    this.held.delete(rec.action);
+    rec.el?.classList.remove("pressed");
+  }
+
+  releaseAll() {
+    for (const rec of this.pointerActions.values()) {
+      if (rec.timer) clearTimeout(rec.timer);
+      rec.el?.classList.remove("pressed");
     }
+    this.pointerActions.clear();
+    this.held.clear();
   }
 
   handleKeyDown(e) {
@@ -69,7 +87,7 @@ export class Input {
     e.preventDefault();
     if (["up", "down", "left", "right"].includes(action)) {
       this.keys.add(action);
-    } else if (!e.repeat) {
+    } else if (!e.repeat && !this.held.has(action)) {
       this.held.add(action);
       this.onAction(action);
       this.flashButton(action, true);
@@ -152,21 +170,29 @@ export class Input {
       const down = (e) => {
         if (!this.enabled) return;
         e.preventDefault();
+        // Android иногда присылает повторный pointerdown для того же пальца
+        // или с новым pointerId. Пока кнопка удерживается, второй удар не нужен.
+        if (this.pointerActions.has(e.pointerId)) return;
+        for (const rec of this.pointerActions.values()) {
+          if (rec.action === action) return;
+        }
         try { el.setPointerCapture(e.pointerId); } catch {}
-        this.pointerActions.set(e.pointerId, action);
+        const rec = { action, el, timer: 0 };
+        this.pointerActions.set(e.pointerId, rec);
+        // Если WebView потеряет pointerup, кнопка сама отпустится.
+        rec.timer = setTimeout(() => this.releasePointer({ pointerId: e.pointerId }), 2500);
         this.held.add(action);
         el.classList.add("pressed");
         this.onAction(action);
       };
       const up = (e) => {
         e.preventDefault();
-        this.pointerActions.delete(e.pointerId);
-        this.held.delete(action);
-        el.classList.remove("pressed");
+        this.releasePointer(e);
       };
       el.addEventListener("pointerdown", down);
       el.addEventListener("pointerup", up);
       el.addEventListener("pointercancel", up);
+      el.addEventListener("lostpointercapture", up);
       el.addEventListener("pointerleave", up);
       el.addEventListener("contextmenu", (e) => e.preventDefault());
     }
@@ -207,9 +233,8 @@ export class Input {
   }
 
   clearHeld() {
-    this.held.clear();
-    this.pointerActions.clear();
-    for (const el of this.buttons.keys()) el.classList.remove("pressed");
+    this.releaseAll();
+    for (const el of this.buttons?.keys?.() || []) el.classList.remove("pressed");
   }
 
   reset() {
@@ -224,5 +249,8 @@ export class Input {
     window.removeEventListener("blur", this._onBlur);
     window.removeEventListener("pointerup", this._onPointerRelease, true);
     window.removeEventListener("pointercancel", this._onPointerRelease, true);
+    window.removeEventListener("mouseup", this._onReleaseAll, true);
+    window.removeEventListener("touchend", this._onReleaseAll, true);
+    window.removeEventListener("touchcancel", this._onReleaseAll, true);
   }
 }

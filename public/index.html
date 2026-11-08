@@ -33,7 +33,7 @@
         <span class="dot">·</span>
         <button id="btn-settings" class="link">Настройки</button>
         <span class="dot">·</span>
-        <span class="version">глава I · v0.2</span>
+        <span class="version">глава I · v0.3.0</span>
       </div>
     </div>
     <div class="menu-edge">WiFi · без интернета</div>
@@ -74,10 +74,13 @@
       <div class="player-panel">
         <div class="class-sigil" id="hud-sigil">ᚨ</div>
         <div class="player-bars">
-          <div class="player-name"><span id="hud-name">Искра</span><span class="level" id="hud-level">1</span></div>
+          <div class="player-name"><span id="hud-name">Искра</span><span class="level" id="hud-level" title="Уровень">ур. 1</span></div>
           <div class="bar hp"><div class="fill" id="hud-hp"></div><span id="hud-hp-text"></span></div>
           <div class="bar memory"><div class="fill" id="hud-memory"></div><span id="hud-memory-text"></span></div>
-          <div class="shard-pill" title="Осколки для верстака"><span class="shard-glyph">◆</span><span id="hud-shards">0</span></div>
+          <div class="stat-pills">
+            <div class="shard-pill" title="Осколки для верстака"><span class="shard-glyph">◆</span><span id="hud-shards">0</span></div>
+            <div class="xp-pill" title="Опыт до следующего уровня"><span class="xp-label">опыт</span><span id="hud-xp">0/40</span></div>
+          </div>
         </div>
       </div>
       <div class="hud-center">
@@ -214,7 +217,9 @@
       </div>
       <div class="map-layout">
         <div class="map-stage">
-          <canvas id="map-canvas" width="576" height="416" aria-label="Большая карта"></canvas>
+          <div class="map-canvas-wrap">
+            <canvas id="map-canvas" width="576" height="416" aria-label="Большая карта"></canvas>
+          </div>
           <div class="map-legend">
             <span><i style="--lg:#fff4d8"></i>ты</span>
             <span><i style="--lg:#c9b27a"></i>люди</span>
@@ -233,7 +238,7 @@
           <p class="muted small">Выбери тип метки и коснись карты. Метки видны в мире сквозь туман и сохраняются для этого мира.</p>
           <div class="map-list-head"><span>Поставлено</span><span id="map-marker-count">0/24</span></div>
           <div id="map-marker-list" class="map-marker-list"></div>
-          <button id="btn-map-clear" class="btn danger">Убрать все метки</button>
+          <button id="btn-map-clear" class="btn danger">Убрать метки</button>
         </aside>
       </div>
     </div>
