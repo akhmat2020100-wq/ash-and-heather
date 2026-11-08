@@ -215,6 +215,7 @@ export class UI {
     else ch = rect.width / aspect;
     const left = rect.left + (rect.width - cw) / 2;
     const top = rect.top + (rect.height - ch) / 2;
+    if (e.clientX < left || e.clientX > left + cw || e.clientY < top || e.clientY > top + ch) return;
     const rx = Math.max(0, Math.min(1, (e.clientX - left) / cw));
     const ry = Math.max(0, Math.min(1, (e.clientY - top) / ch));
     const x = rx * MAP_W * TILE;

@@ -155,13 +155,13 @@ export class AudioEngine {
       shimmer.frequency.value = freq * 2;
       shimmer.detune.value = (Math.random() - 0.5) * 6;
       const shimmerGain = ctx.createGain();
-      shimmerGain.gain.value = 0.16;
+      shimmerGain.gain.value = 0.28;
       const filter = ctx.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.value = 760 + i * 120;
+      filter.frequency.value = 900 + i * 150;
       filter.Q.value = 0.3;
       const g = ctx.createGain();
-      const peak = 0.0135 - i * 0.0015;
+      const peak = 0.016 - i * 0.0015;
       const attack = 3.4 + Math.random() * 0.8;
       g.gain.setValueAtTime(0.0001, t);
       g.gain.linearRampToValueAtTime(Math.max(0.0002, peak), t + attack);
