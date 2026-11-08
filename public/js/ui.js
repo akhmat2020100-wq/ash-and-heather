@@ -23,6 +23,11 @@ const MAP_TILE_COLORS = {
   [T.ASH]: "#3b3734",
   [T.BRIDGE]: "#54412d",
   [T.MOSS]: "#35472f",
+  [T.CAVE]: "#23222a",
+  [T.CAVE_WALL]: "#19181f",
+  [T.WOOD]: "#4a3828",
+  [T.RUG]: "#563b45",
+  [T.STAIRS]: "#5c4a36",
 };
 const $ = (id) => document.getElementById(id);
 
@@ -44,6 +49,10 @@ export class UI {
     this.lastClass = "lantern";
     this.mapOpen = false;
     this.workbenchOpen = false;
+    this.shopOpen = false;
+    this.shopView = null;
+    this.shopSig = "";
+    this.servers = [];
     this.mapScene = null;
     this.mapTiles = null;
     this.mapMarkers = [];
@@ -55,6 +64,9 @@ export class UI {
     this.onMarkerRemove = () => {};
     this.onMarkersClear = () => {};
     this.onUpgrade = () => {};
+    this.onBuy = () => {};
+    this.onShopClose = () => {};
+    this.onRefreshServers = () => {};
 
     this.el = {
       menu: $("menu"), char: $("char"), hud: $("hud"), pause: $("pause"),
@@ -90,6 +102,10 @@ export class UI {
       workbench: $("workbench"),
       workbenchShards: $("workbench-shards"),
       workbenchList: $("workbench-list"),
+      shop: $("shop"), shopCoins: $("shop-coins"), shopList: $("shop-list"),
+      shopEquipment: $("shop-equipment"),
+      serverList: $("server-list"),
+      coins: $("hud-coins"),
     };
 
     this.bindMenu();
@@ -97,6 +113,7 @@ export class UI {
     this.bindDialogueBox();
     this.bindMap();
     this.bindWorkbench();
+    this.bindShop();
     this.buildClassCards();
     this.applySettings({ music: 55, sfx: 75, reduce: false, hints: true });
   }
@@ -127,6 +144,7 @@ export class UI {
     click("btn-solo", () => this.onSolo());
     click("btn-host", () => this.onHost());
     click("btn-join", () => this.onJoin());
+    click("btn-server-refresh", () => this.onRefreshServers());
     click("btn-settings", () => this.openSettings("menu"));
     click("btn-continue", () => this.onContinue?.());
     click("btn-char-back", () => this.onCharBack());
@@ -309,15 +327,31 @@ export class UI {
       this.mapBackdrop = bg;
       this.mapBackdropTiles = tiles;
     }
+
+    const me = (scene.players || []).find((p) => p.id === myId) || scene.players?.[0] || null;
+    let viewX = 0;
+    let viewY = 0;
+    let viewW = MAP_W * TILE;
+    let viewH = MAP_H * TILE;
+    if (!big) {
+      // Мини-карта — только окрестности игрока, примерно 52x38 тайлов.
+      viewW = 52 * TILE;
+      viewH = viewW * (h / w);
+      const cx = me?.x ?? (MAP_W * TILE) / 2;
+      const cy = me?.y ?? (MAP_H * TILE) / 2;
+      viewX = Math.max(0, Math.min(MAP_W * TILE - viewW, cx - viewW / 2));
+      viewY = Math.max(0, Math.min(MAP_H * TILE - viewH, cy - viewH / 2));
+    }
+
     ctx.clearRect(0, 0, w, h);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(this.mapBackdrop, 0, 0, w, h);
-    const sx = w / (MAP_W * TILE);
-    const sy = h / (MAP_H * TILE);
-    const px = (x) => x * sx;
-    const py = (y) => y * sy;
+    ctx.drawImage(this.mapBackdrop, viewX, viewY, viewW, viewH, 0, 0, w, h);
+    const sx = w / viewW;
+    const sy = h / viewH;
+    const px = (x) => (x - viewX) * sx;
+    const py = (y) => (y - viewY) * sy;
+    const inView = (x, y, pad = 24) => x >= viewX - pad && x <= viewX + viewW + pad && y >= viewY - pad && y <= viewY + viewH + pad;
 
-    // landmarks and detail dots — only on the big map, чтобы мини-карта не рябила
     if (big) {
       for (const [key, lm] of Object.entries(scene.landmarks || {})) {
         if (!lm || !Number.isFinite(lm.x)) continue;
@@ -331,8 +365,6 @@ export class UI {
         ctx.fillStyle = "rgba(230,220,200,0.62)";
         ctx.fillText(label, x, y - 5);
       }
-
-      // NPC
       for (const npc of scene.npcs || []) {
         if (!npc.alive) continue;
         ctx.fillStyle = "#c9b27a";
@@ -340,31 +372,30 @@ export class UI {
         ctx.arc(px(npc.x), py(npc.y), 3, 0, Math.PI * 2);
         ctx.fill();
       }
-
-      // enemies
-      for (const e of scene.enemies || []) {
-        if (e.hp <= 0 || e.dormant) continue;
-        const x = px(e.x);
-        const y = py(e.y);
-        ctx.fillStyle = e.boss ? "#ffb0a0" : "rgba(200,90,80,0.9)";
-        ctx.beginPath();
-        ctx.arc(x, y, e.boss ? 5 : 2.6, 0, Math.PI * 2);
-        ctx.fill();
-      }
     } else {
-      // только главные ориентиры
-      for (const key of ["irma", "workbench", "chapel"]) {
-        const lm = scene.landmarks?.[key];
-        if (!lm || !Number.isFinite(lm.x)) continue;
-        ctx.fillStyle = "rgba(232,165,75,0.7)";
+      // На локальной карте — только ближайшие ориентиры и живые точки.
+      for (const [key, lm] of Object.entries(scene.landmarks || {})) {
+        if (!lm || !Number.isFinite(lm.x) || !inView(lm.x, lm.y, 0)) continue;
+        if (!["home", "irma", "shop", "workbench", "hunter", "nameTree", "mill", "saltMarsh", "barrows", "cave", "cage", "bed"].includes(key)) continue;
+        ctx.fillStyle = "rgba(232,165,75,0.8)";
         ctx.beginPath();
-        ctx.arc(px(lm.x), py(lm.y), 1.7, 0, Math.PI * 2);
+        ctx.arc(px(lm.x), py(lm.y), 2.4, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
-    // markers
+    for (const e of scene.enemies || []) {
+      if (e.hp <= 0 || e.dormant || !inView(e.x, e.y)) continue;
+      const x = px(e.x);
+      const y = py(e.y);
+      ctx.fillStyle = e.boss ? "#ffb0a0" : "rgba(200,90,80,0.9)";
+      ctx.beginPath();
+      ctx.arc(x, y, e.boss ? 5 : big ? 2.6 : 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     for (const m of markers || []) {
+      if (!inView(m.x, m.y)) continue;
       const color = MARKER_TYPES[m.type]?.color || MARKER_TYPES.goal.color;
       const x = px(m.x);
       const y = py(m.y);
@@ -382,7 +413,6 @@ export class UI {
       ctx.stroke();
     }
 
-    // players last
     for (const p of scene.players || []) {
       if (p.downed) continue;
       const def = CLASSES[p.cls] || CLASSES.lantern;
@@ -390,15 +420,23 @@ export class UI {
       const y = py(p.y);
       ctx.fillStyle = p.id === myId ? "#fff4d8" : def.color;
       ctx.beginPath();
-      ctx.arc(x, y, p.id === myId ? (big ? 5 : 2.4) : (big ? 4 : 2), 0, Math.PI * 2);
+      ctx.arc(x, y, p.id === myId ? (big ? 5 : 3.4) : (big ? 4 : 2.6), 0, Math.PI * 2);
       ctx.fill();
       if (p.id === myId) {
         ctx.strokeStyle = "rgba(255,209,138,0.55)";
         ctx.lineWidth = 1.2;
         ctx.beginPath();
-        ctx.arc(x, y, big ? 9 : 4.5, 0, Math.PI * 2);
+        ctx.arc(x, y, big ? 9 : 6, 0, Math.PI * 2);
         ctx.stroke();
       }
+    }
+
+    const daughter = scene.daughter;
+    if (daughter && daughter.visible && inView(daughter.x, daughter.y)) {
+      ctx.fillStyle = "#f0c8b8";
+      ctx.beginPath();
+      ctx.arc(px(daughter.x), py(daughter.y), big ? 4 : 2.6, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     if (big) {
@@ -491,6 +529,129 @@ export class UI {
   }
 
 
+  /* ---------- лавка ---------- */
+  bindShop() {
+    $("btn-shop-close")?.addEventListener("click", () => {
+      this.sound("ui");
+      this.closeShop();
+    });
+    $("btn-shop-done")?.addEventListener("click", () => {
+      this.sound("ui");
+      this.closeShop();
+    });
+    this.el.shop?.addEventListener("click", (e) => {
+      if (e.target === this.el.shop) this.closeShop();
+    });
+    this.el.shopList?.addEventListener("click", (e) => {
+      const btn = e.target?.closest?.("[data-shop-id]");
+      if (!btn || btn.disabled) return;
+      this.sound("choice");
+      this.onBuy(btn.getAttribute("data-shop-id"));
+    });
+  }
+
+  openShop(view) {
+    if (!view) return;
+    this.shopOpen = true;
+    this.shopSig = "";
+    this.el.shop?.classList.remove("hidden");
+    this.renderShop(view);
+  }
+
+  updateShop(view) {
+    if (!this.shopOpen || !view) return;
+    this.renderShop(view);
+  }
+
+  renderShop(view) {
+    if (!this.el.shopList) return;
+    const sig = `${view.coins}:${view.equipment?.weapon}:${view.equipment?.armor}:${(view.items || []).map((i) => `${i.id}${i.affordable}${i.equipped}${i.better}`).join(",")}`;
+    if (sig === this.shopSig) return;
+    this.shopSig = sig;
+    this.shopView = view;
+    if (this.el.shopCoins) this.el.shopCoins.textContent = String(view.coins || 0);
+    if (this.el.shopEquipment) {
+      const items = view.items || [];
+      const weapon = items.find((i) => i.id === view.equipment?.weapon);
+      const armor = items.find((i) => i.id === view.equipment?.armor);
+      this.el.shopEquipment.textContent = `оружие: ${weapon?.name || "нет"} · броня: ${armor?.name || "нет"}`;
+    }
+    const groups = [
+      { kind: "weapon", title: "Оружие" },
+      { kind: "armor", title: "Броня" },
+    ];
+    this.el.shopList.innerHTML = groups
+      .map(({ kind, title }) => {
+        const rows = (view.items || [])
+          .filter((i) => i.kind === kind)
+          .map((item) => {
+            const disabled = !item.affordable || !item.better;
+            const state = item.equipped ? "надето" : !item.better ? "слабее" : item.affordable ? `${item.price} ●` : `нужно ${item.price} ●`;
+            return `<div class="shop-row ${item.equipped ? "equipped" : ""} ${!item.better ? "weaker" : ""}">
+              <span class="shop-glyph">${item.glyph || "◆"}</span>
+              <span class="shop-main">
+                <span class="shop-name">${escapeHtml(item.name)}</span>
+                <span class="shop-desc">${escapeHtml(item.desc)}</span>
+                <span class="shop-stats">${item.kind === "weapon" ? `+${item.damage} урона` : `+${item.maxHp} здоровья${item.reduce ? ` · −${Math.round(item.reduce * 100)}% урона` : ""}`}</span>
+              </span>
+              <button type="button" class="btn shop-buy" data-shop-id="${item.id}" ${disabled ? "disabled" : ""}>${state}</button>
+            </div>`;
+          })
+          .join("");
+        return `<div class="shop-group"><div class="shop-group-title">${title}</div>${rows}</div>`;
+      })
+      .join("");
+  }
+
+  closeShop(notify = true) {
+    if (!this.shopOpen) return;
+    this.shopOpen = false;
+    this.shopSig = "";
+    this.el.shop?.classList.add("hidden");
+    if (notify) this.onShopClose();
+  }
+
+  isShopOpen() {
+    return this.shopOpen;
+  }
+
+  /* ---------- найденные серверы ---------- */
+  setServers(servers) {
+    this.servers = Array.isArray(servers) ? servers.slice() : [];
+    if (!this.el.serverList) return;
+    if (!this.servers.length) {
+      this.el.serverList.innerHTML = `<div class="server-empty">Пока никого рядом. Убедись, что хост создал игру и WiFi включён.</div>`;
+      return;
+    }
+    this.el.serverList.innerHTML = this.servers
+      .map((server, i) => {
+        const url = server.ws || server.url || "";
+        const host = server.host || url.replace(/^wss?:\/\//, "").replace(/\/ws$/, "");
+        const current = (this.el.joinUrl?.value || "") === url;
+        return `<button type="button" class="server-card ${current ? "selected" : ""}" data-server-index="${i}" data-server-url="${escapeHtml(url)}">
+          <span class="server-dot"></span>
+          <span class="server-main"><b>${escapeHtml(server.name || "Хост")}</b><span>${escapeHtml(host)}</span></span>
+          <span class="server-join">войти</span>
+        </button>`;
+      })
+      .join("");
+    this.el.serverList.querySelectorAll("[data-server-index]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const index = Number(btn.getAttribute("data-server-index"));
+        const server = this.servers[index];
+        if (!server) return;
+        this.sound("choice");
+        this.setJoinAddress(server.ws || server.url || "");
+        this.el.serverList.querySelectorAll(".server-card").forEach((card) => card.classList.toggle("selected", card === btn));
+      });
+    });
+  }
+
+  setServersLoading(text = "Ищем хосты в WiFi…") {
+    if (!this.el.serverList) return;
+    this.el.serverList.innerHTML = `<div class="server-empty">${escapeHtml(text)}</div>`;
+  }
+
   openChar(mode) {
     this.mode = mode;
     this.el.menu.classList.add("hidden");
@@ -499,19 +660,21 @@ export class UI {
     this.el.btnStart.textContent = mode === "join" ? "Присоединиться" : mode === "host" ? "Создать и открыть" : "Войти в туман";
     if (mode === "solo") {
       this.el.charEyebrow.textContent = "перед входом в туман";
-      this.el.charTitle.textContent = "Кто ты, Искра?";
-      this.el.charSubtitle.textContent = "Имя — последнее, что у тебя есть. Выбери, каким ты войдёшь в туман.";
-      this.el.charNote.textContent = "Один в тумане. Мир будет ждать только тебя.";
+      this.el.charTitle.textContent = "Кто ты, отец Лиры?";
+      this.el.charSubtitle.textContent = "Дом ещё горит. Выбери, каким ты войдёшь в туман и что сумеешь вспомнить.";
+      this.el.charNote.textContent = "Один в тумане. Лира будет ждать только тебя.";
     } else if (mode === "host") {
       this.el.charEyebrow.textContent = "ты зажигаешь огонь";
       this.el.charTitle.textContent = "Кто будет ждать у костра?";
-      this.el.charSubtitle.textContent = "Друзья подключатся к твоей игре по WiFi. Ты станешь хостом этого мира.";
-      this.el.charNote.textContent = "После входа покажи друзьям адрес из комнаты.";
+      this.el.charSubtitle.textContent = "Друзья подключатся к твоей игре по WiFi. Ты станешь хостом этого мира и старшим братом для остальных.";
+      this.el.charNote.textContent = "После входа покажи друзьям адрес из комнаты. Они найдут её сами.";
     } else {
       this.el.charEyebrow.textContent = "ты идёшь на чужой свет";
-      this.el.charTitle.textContent = "Кто ты, гость тумана?";
-      this.el.charSubtitle.textContent = "Введи адрес хоста. Он должен быть в той же сети WiFi.";
+      this.el.charTitle.textContent = "Кто ты, брат тумана?";
+      this.el.charSubtitle.textContent = "Выбери найденный хост рядом или введи адрес вручную. Хост должен быть в той же сети WiFi.";
       this.el.charNote.textContent = "Хост уже должен создать игру.";
+      this.setServersLoading();
+      this.onRefreshServers();
       if (!this.el.joinUrl.value && !window.AshNative?.isEmbedded?.()) {
         const host = location.hostname && location.protocol.startsWith("http") ? location.host : "";
         this.el.joinUrl.value = host ? `ws://${host}/ws` : "";
@@ -564,6 +727,7 @@ export class UI {
     this.hideAllScreens();
     this.closeMap();
     this.closeWorkbench();
+    this.closeShop(false);
     this.el.menu.classList.remove("hidden");
     this.showHud(false);
     this.hideDialogue();
@@ -581,20 +745,21 @@ export class UI {
     this.hideAllScreens();
     this.closeMap();
     this.closeWorkbench();
+    this.closeShop(false);
     this.el.hud.classList.remove("hidden");
     this.el.controls?.classList.remove("hidden");
     this.showHud(true);
   }
 
   hideAllScreens() {
-    for (const key of ["menu", "char", "pause", "settings", "help", "end"]) {
+    for (const key of ["menu", "char", "pause", "settings", "help", "end", "shop"]) {
       this.el[key]?.classList.add("hidden");
     }
     this.el.dialogue?.classList.add("hidden");
   }
 
   showScreen(el) {
-    for (const key of ["menu", "char", "pause", "settings", "help", "end"]) {
+    for (const key of ["menu", "char", "pause", "settings", "help", "end", "shop"]) {
       if (this.el[key] === el) this.el[key].classList.remove("hidden");
       else this.el[key]?.classList.add("hidden");
     }
@@ -603,6 +768,7 @@ export class UI {
   showHud(v) {
     this.el.hud?.classList.toggle("hidden", !v);
     if (!v) {
+      this.closeShop(false);
       this.el.dialogue?.classList.add("hidden");
       this.el.bossBar?.classList.add("hidden");
       this.el.downed?.classList.add("hidden");
@@ -637,6 +803,9 @@ export class UI {
     if (this.el.shards && this.el.shards.textContent !== String(me.shards || 0)) {
       this.el.shards.textContent = String(me.shards || 0);
     }
+    if (this.el.coins && this.el.coins.textContent !== String(me.coins || 0)) {
+      this.el.coins.textContent = String(me.coins || 0);
+    }
     this.updateAbility(me, def);
     this.updateParty(scene, myId);
     this.updateQuest(scene);
@@ -659,39 +828,47 @@ export class UI {
   updateQuest(scene) {
     const quest = scene.quest;
     if (!quest) return;
-    let main = QUEST_MAIN.stages[quest.main?.stage] || "";
-    if (quest.main?.stage === 2 && scene.flags?.riteStarted) {
-      if (scene.flags?.riteReady) {
-        main = "Вернуться к двери часовни и назвать три имени.";
-      } else {
-        const names = scene.flags.riteNames || {};
-        const count = Object.values(names).filter(Boolean).length;
-        main = `Собрать три имени для часовни: Мила, Гарм, Ада (${count}/3).`;
-      }
+    const stage = quest.main?.stage ?? 0;
+    let main = scene.questText?.main || QUEST_MAIN.stages[stage] || "";
+    const flags = scene.flags || {};
+    if (stage === 1) {
+      const found = flags.cluesFound || Object.values(flags.clues || {}).filter(Boolean).length;
+      main = `Найти три следа: фонарь у дома, ленту у лавки и колею на северной дороге. (${found}/3)`;
+    } else if (stage === 5 && scene.daughter?.state === "following") {
+      main = "Привести Лиру домой. Она идёт за тобой и считает шаги.";
+    } else if (stage === 6) {
+      main = "Покормить Лиру за столом на первом этаже.";
+    } else if (stage === 7) {
+      main = "Уложить Лиру в постель на втором этаже.";
     }
     if (this.el.questMain && this.el.questMain.textContent !== main) this.el.questMain.textContent = main;
     const side = [];
-    const pushStage = (key, done) => {
-      const stage = quest.side?.[key] ?? 1;
-      if (done(stage) || !SIDE_QUESTS[key]?.stages[stage]) return;
-      side.push(SIDE_QUESTS[key].stages[stage]);
-    };
-    pushStage("hunter", (s) => s >= 3);
-    pushStage("name", (s) => s >= 3);
-    pushStage("merchant", (s) => s >= 2);
-    pushStage("herbs", (s) => s >= 3);
-    pushStage("beacons", (s) => s >= 3);
-    pushStage("barrows", (s) => s >= 3);
-    pushStage("truth", (s) => s >= 2);
-    const me = scene.players?.find((p) => p.id === scene.myId) || scene.players?.[0];
-    const hasUpgrade = me && Object.values(me.weapon || {}).some((v) => v > 0);
-    if (me && (me.shards || 0) > 0 && !hasUpgrade) {
-      side.unshift(`◆ ${me.shards}: улучшить оружие на верстаке у последнего очага.`);
+    const sides = scene.questText?.side;
+    if (Array.isArray(sides) && sides.length) {
+      side.push(...sides);
+    } else {
+      const pushStage = (key, done) => {
+        const progress = quest.side?.[key] ?? 1;
+        if (done(progress) || !SIDE_QUESTS[key]?.stages[progress]) return;
+        side.push(SIDE_QUESTS[key].stages[progress]);
+      };
+      pushStage("hunter", (s) => s >= 3);
+      pushStage("name", (s) => s >= 3);
+      pushStage("mill", (s) => s >= 2);
+      pushStage("herbs", (s) => s >= 3);
+      pushStage("beacons", (s) => s >= 3);
+      pushStage("barrows", (s) => s >= 3);
+      pushStage("truth", (s) => s >= 2);
     }
-    const sig = side.join("|");
+    const me = scene.players?.find((p) => p.id === scene.myId) || scene.players?.[0];
+    if (me && (me.coins || 0) >= 25 && !me.equipment?.weapon) {
+      side.unshift(`● ${me.coins}: заглянуть в лавку Ворона — оружие и броня.`);
+    }
+    const shown = side.slice(0, 4);
+    const sig = shown.join("|");
     if (this.el.questSide && this.questSideSig !== sig) {
       this.questSideSig = sig;
-      this.el.questSide.innerHTML = side.map((s) => `<div>${s}</div>`).join("");
+      this.el.questSide.innerHTML = shown.map((s) => `<div>${s}</div>`).join("");
     }
   }
 
@@ -703,7 +880,7 @@ export class UI {
       if (this.el.bossHp) this.el.bossHp.style.width = `${Math.max(0, (boss.hp / boss.maxHp) * 100)}%`;
       if (this.el.bossName) {
         const suffix = boss.phase >= 3 ? " · ярость" : boss.phase === 2 ? " · слёзы" : "";
-        this.el.bossName.textContent = "Плакальщик" + suffix;
+        this.el.bossName.textContent = "Серый Похититель" + suffix;
       }
     } else {
       this.el.bossBar.classList.add("hidden");
@@ -948,6 +1125,7 @@ export class UI {
     this.showHud(false);
     this.closeMap();
     this.closeWorkbench();
+    this.closeShop(false);
     this.hideDialogue();
     this.hidePause();
     this.el.end?.classList.remove("hidden");
@@ -957,7 +1135,7 @@ export class UI {
       this.el.endStats.innerHTML = `
         <div><b>${stats.level ?? 1}</b>уровень</div>
         <div><b>${stats.kills ?? 0}</b>повержено</div>
-        <div><b>${stats.embers ?? 0}/3</b>уголька</div>
+        <div><b>${stats.coins ?? 0}</b>монет</div>
         <div><b>${stats.shards ?? 0}</b>осколков</div>`;
     }
     this.updateRotate(false);
@@ -981,6 +1159,11 @@ export class UI {
 
   setJoinAddress(url) {
     if (this.el.joinUrl) this.el.joinUrl.value = url;
+    if (this.el.serverList) {
+      this.el.serverList.querySelectorAll(".server-card").forEach((card) => {
+        card.classList.toggle("selected", card.getAttribute("data-server-url") === url);
+      });
+    }
   }
 }
 

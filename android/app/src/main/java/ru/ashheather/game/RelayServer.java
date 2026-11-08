@@ -102,6 +102,12 @@ public class RelayServer extends WebSocketServer {
     }
   }
 
+  public int playerCount() {
+    synchronized (lock) {
+      return peers.size();
+    }
+  }
+
   private void broadcastLocked(JSONObject o, WebSocket except) {
     for (WebSocket ws : new ArrayList<>(peers.keySet())) {
       if (ws != except) send(ws, o);

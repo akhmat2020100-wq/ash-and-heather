@@ -277,8 +277,8 @@ export class AudioEngine {
         this.tone({ freq: 440, to: 560, type: "triangle", dur: 0.16, gain: 0.07 });
         break;
       case "slash":
-        this.noise({ dur: 0.16, gain: 0.16, freq: 1800, q: 0.8, sweepTo: 500 });
-        this.tone({ freq: 160, to: 90, type: "sawtooth", dur: 0.12, gain: 0.05 });
+        this.noise({ dur: 0.16, gain: 0.12, freq: 1600, q: 0.9, sweepTo: 520 });
+        this.tone({ freq: 180, to: 110, type: "triangle", dur: 0.14, gain: 0.045 });
         break;
       case "shoot":
         this.tone({ freq: 900, to: 380, type: "triangle", dur: 0.14, gain: 0.08 });
@@ -289,8 +289,8 @@ export class AudioEngine {
         this.tone({ freq: 190, to: 120, type: "square", dur: 0.08, gain: 0.045 });
         break;
       case "hurt":
-        this.tone({ freq: 150, to: 70, type: "sawtooth", dur: 0.26, gain: 0.11 });
-        this.noise({ dur: 0.16, gain: 0.08, freq: 500, q: 0.7 });
+        this.tone({ freq: 170, to: 85, type: "triangle", dur: 0.28, gain: 0.09 });
+        this.noise({ dur: 0.18, gain: 0.06, freq: 520, q: 0.8 });
         break;
       case "dodge":
         this.noise({ dur: 0.22, gain: 0.1, freq: 900, q: 1.2, sweepTo: 2600, type: "highpass" });
@@ -301,12 +301,12 @@ export class AudioEngine {
         this.noise({ dur: 0.4, gain: 0.05, freq: 1600, q: 0.9 });
         break;
       case "pierce":
-        this.tone({ freq: 1200, to: 300, type: "sawtooth", dur: 0.28, gain: 0.06 });
-        this.noise({ dur: 0.22, gain: 0.08, freq: 2200, q: 2, sweepTo: 700 });
+        this.tone({ freq: 1200, to: 360, type: "triangle", dur: 0.28, gain: 0.05 });
+        this.noise({ dur: 0.22, gain: 0.06, freq: 2100, q: 2, sweepTo: 750 });
         break;
       case "cone":
-        this.noise({ dur: 0.3, gain: 0.18, freq: 1000, q: 0.6, sweepTo: 300 });
-        this.tone({ freq: 110, to: 55, type: "sawtooth", dur: 0.32, gain: 0.1 });
+        this.noise({ dur: 0.3, gain: 0.13, freq: 950, q: 0.7, sweepTo: 320 });
+        this.tone({ freq: 120, to: 70, type: "triangle", dur: 0.34, gain: 0.075 });
         break;
       case "nova":
         this.tone({ freq: 660, to: 1320, type: "sine", dur: 0.55, gain: 0.09 });
@@ -367,11 +367,11 @@ export class AudioEngine {
         }
         break;
       case "bossPhase":
-        this.tone({ freq: 110, to: 220, type: "sawtooth", dur: 1.2, gain: 0.07 });
-        this.noise({ dur: 1.1, gain: 0.07, freq: 700, q: 0.7, sweepTo: 180 });
+        this.tone({ freq: 110, to: 220, type: "triangle", dur: 1.2, gain: 0.06 });
+        this.noise({ dur: 1.1, gain: 0.055, freq: 650, q: 0.8, sweepTo: 190 });
         break;
       case "down":
-        this.tone({ freq: 220, to: 60, type: "sawtooth", dur: 1.4, gain: 0.12 });
+        this.tone({ freq: 220, to: 70, type: "triangle", dur: 1.4, gain: 0.1 });
         break;
       case "revive":
         this.tone({ freq: 220, to: 440, type: "sine", dur: 1.3, gain: 0.09 });
@@ -391,6 +391,48 @@ export class AudioEngine {
         break;
       case "chime":
         this.tone({ freq: 1046, type: "sine", dur: 1.4, gain: 0.035 });
+        break;
+      case "join":
+        this.tone({ freq: 392, type: "sine", dur: 1.1, gain: 0.045 });
+        this.tone({ freq: 523.25, type: "sine", dur: 1.2, gain: 0.035, delay: 0.09 });
+        this.tone({ freq: 659.25, type: "sine", dur: 1.4, gain: 0.026, delay: 0.18 });
+        break;
+      case "checkpoint":
+        this.tone({ freq: 329.63, to: 392, type: "sine", dur: 0.7, gain: 0.04 });
+        this.tone({ freq: 493.88, type: "sine", dur: 0.9, gain: 0.026, delay: 0.08 });
+        break;
+      case "clue":
+        this.tone({ freq: 659.25, type: "sine", dur: 1.3, gain: 0.045 });
+        this.tone({ freq: 987.77, type: "sine", dur: 1.6, gain: 0.024, delay: 0.07 });
+        break;
+      case "kidnap":
+        this.tone({ freq: 98, to: 55, type: "sine", dur: 2.6, gain: 0.12, attack: 0.2 });
+        this.noise({ dur: 2.2, gain: 0.055, freq: 380, q: 0.6, sweepTo: 120 });
+        this.tone({ freq: 233.08, to: 174.61, type: "sine", dur: 1.8, gain: 0.03, delay: 0.3 });
+        break;
+      case "rescued":
+        [392, 493.88, 587.33, 783.99].forEach((freq, i) => {
+          this.tone({ freq, type: "sine", dur: 1.6 - i * 0.12, gain: 0.05 - i * 0.008, delay: i * 0.12 });
+        });
+        break;
+      case "feed":
+        this.tone({ freq: 523.25, to: 587.33, type: "sine", dur: 0.5, gain: 0.04 });
+        this.tone({ freq: 783.99, type: "sine", dur: 0.8, gain: 0.024, delay: 0.1 });
+        this.noise({ dur: 0.18, gain: 0.02, freq: 1200, q: 1.6 });
+        break;
+      case "sleep":
+        [783.99, 659.25, 523.25, 392].forEach((freq, i) => {
+          this.tone({ freq, type: "sine", dur: 2.4 - i * 0.2, gain: 0.032 - i * 0.004, delay: i * 0.24 });
+        });
+        break;
+      case "coin":
+        this.tone({ freq: 1318.51, type: "triangle", dur: 0.18, gain: 0.028 });
+        this.tone({ freq: 1975.53, type: "sine", dur: 0.32, gain: 0.018, delay: 0.02 });
+        break;
+      case "buy":
+        this.tone({ freq: 1046.5, type: "triangle", dur: 0.16, gain: 0.035 });
+        this.tone({ freq: 1567.98, type: "sine", dur: 0.5, gain: 0.022, delay: 0.06 });
+        this.tone({ freq: 2093, type: "sine", dur: 0.7, gain: 0.012, delay: 0.12 });
         break;
       default:
         break;

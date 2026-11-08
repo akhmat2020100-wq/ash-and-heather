@@ -47,4 +47,23 @@ final class Lan {
     List<String> list = addresses();
     return list.isEmpty() ? "" : list.get(0);
   }
+
+  /** Широковещательные адреса подсетей — для UDP-поиска комнат. */
+  static List<String> broadcasts() {
+    Set<String> out = new LinkedHashSet<>();
+    try {
+      for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+        if (!ni.isUp() || ni.isLoopback()) continue;
+        for (InterfaceAddress ia : ni.getInterfaceAddresses()) {
+          InetAddress broadcast = ia.getBroadcast();
+          if (!(broadcast instanceof Inet4Address)) continue;
+          String ip = broadcast.getHostAddress();
+          if (ip == null || ip.startsWith("127.") || ip.startsWith("169.254.")) continue;
+          out.add(ip);
+        }
+      }
+    } catch (Exception ignored) {
+    }
+    return new ArrayList<>(out);
+  }
 }

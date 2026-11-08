@@ -56,6 +56,11 @@ public class NativeBridge {
   }
 
   @JavascriptInterface
+  public String discoverHosts() {
+    return LanDiscovery.discoverHostsJson();
+  }
+
+  @JavascriptInterface
   public void vibrate(int milliseconds) {
     try {
       Vibrator v = (Vibrator) activity.getSystemService(Context.VIBRATOR_SERVICE);

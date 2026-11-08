@@ -40,6 +40,9 @@ public class StaticServer extends NanoHTTPD {
     if ("/api/status".equals(uri)) {
       return statusResponse();
     }
+    if ("/api/discover".equals(uri)) {
+      return discoverResponse();
+    }
     if ("/favicon.ico".equals(uri)) {
       return newFixedLengthResponse(Response.Status.NO_CONTENT, "text/plain", "");
     }
@@ -90,12 +93,20 @@ public class StaticServer extends NanoHTTPD {
       o.put("port", port);
       o.put("wsPort", relay == null ? -1 : relay.getRelayPort());
       o.put("lan", new JSONArray(Lan.addresses()));
-      o.put("version", "0.3.1");
+      o.put("version", LanDiscovery.VERSION);
       o.put("game", "ash-and-heather");
     } catch (Exception e) {
       Log.w(TAG, "status json", e);
     }
     Response res = newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", o.toString());
+    res.addHeader("Cache-Control", "no-store");
+    res.addHeader("Access-Control-Allow-Origin", "*");
+    return res;
+  }
+
+  private Response discoverResponse() {
+    String json = LanDiscovery.discoverJson(relay, port, relay == null ? -1 : relay.getRelayPort());
+    Response res = newFixedLengthResponse(Response.Status.OK, "application/json; charset=utf-8", json);
     res.addHeader("Cache-Control", "no-store");
     res.addHeader("Access-Control-Allow-Origin", "*");
     return res;

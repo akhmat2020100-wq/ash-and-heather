@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#0b0d12">
-  <meta name="description" content="Пепел и Вереск — кооперативная тёмная сказка о памяти. Локальная игра по WiFi.">
+  <meta name="description" content="Пепел и Вереск — кооперативная тёмная сказка о доме и похищенной дочери. Локальная игра по WiFi.">
   <title>Пепел и Вереск</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -20,8 +20,8 @@
     <div class="menu-content">
       <div class="menu-kicker">локальная сказка · 1–4 игрока</div>
       <h1 class="game-title">ПЕПЕЛ<br><span>И ВЕРЕСК</span></h1>
-      <p class="game-subtitle">тёмная сказка о памяти</p>
-      <p class="menu-lead">Огонь угасает. Мгла забирает имена. Ты — Искра, и ты ещё помнишь, кто ты.</p>
+      <p class="game-subtitle">тёмная сказка о доме</p>
+      <p class="menu-lead">Серый Похититель забрал твою дочь. Дом ещё горит. Иди по следам, пока она помнит твоё имя.</p>
       <div class="menu-actions">
         <button id="btn-continue" class="btn primary hidden">Продолжить</button>
         <button id="btn-solo" class="btn primary">Один в тумане</button>
@@ -33,7 +33,7 @@
         <span class="dot">·</span>
         <button id="btn-settings" class="link">Настройки</button>
         <span class="dot">·</span>
-        <span class="version">глава I · v0.3.1</span>
+        <span class="version">глава II · v0.4.0</span>
       </div>
     </div>
     <div class="menu-edge">WiFi · без интернета</div>
@@ -55,10 +55,22 @@
         <label class="field">Имя
           <input id="char-name" maxlength="24" value="Странник" autocomplete="off" spellcheck="false">
         </label>
-        <label class="field hidden" id="join-field">Адрес хоста
-          <input id="join-url" placeholder="ws://192.168.1.5:8080/ws" autocomplete="off" spellcheck="false">
-          <span class="field-note">Адрес показывает телефон-хост.</span>
-        </label>
+        <div class="join-field hidden" id="join-field">
+          <div class="join-head">
+            <span>Найдены рядом</span>
+            <button id="btn-server-refresh" type="button" class="link">Обновить</button>
+          </div>
+          <div id="server-list" class="server-list">
+            <div class="server-empty">Ищем хосты в WiFi…</div>
+          </div>
+          <details class="join-manual">
+            <summary>Ввести адрес вручную</summary>
+            <label class="field">Адрес хоста
+              <input id="join-url" placeholder="ws://192.168.1.5:8080/ws" autocomplete="off" spellcheck="false">
+            </label>
+            <span class="field-note">Если авто-поиск не нашёл хост — введи адрес с экрана хоста.</span>
+          </details>
+        </div>
       </div>
       <div id="class-cards" class="class-cards"></div>
       <div class="char-start">
@@ -78,6 +90,7 @@
           <div class="bar hp"><div class="fill" id="hud-hp"></div><span id="hud-hp-text"></span></div>
           <div class="bar memory"><div class="fill" id="hud-memory"></div><span id="hud-memory-text"></span></div>
           <div class="stat-pills">
+            <div class="shard-pill" title="Монеты для лавки Ворона"><span class="coin-glyph">●</span><span id="hud-coins">0</span></div>
             <div class="shard-pill" title="Осколки для верстака"><span class="shard-glyph">◆</span><span id="hud-shards">0</span></div>
             <div class="xp-pill" title="Опыт до следующего уровня"><span class="xp-label">опыт</span><span id="hud-xp">0/40</span></div>
           </div>
@@ -86,7 +99,7 @@
       <div class="hud-center">
         <div class="room-chip" id="room-chip"></div>
         <div class="boss-bar hidden" id="boss-bar">
-          <span id="boss-name">Плакальщик</span>
+          <span id="boss-name">Серый Похититель</span>
           <div class="boss-track"><div id="boss-hp"></div></div>
         </div>
       </div>
@@ -102,7 +115,7 @@
     </div>
 
     <div class="quest-panel" id="quest-panel">
-      <div class="quest-title">Огонь угасает</div>
+      <div class="quest-title">Серый Похититель</div>
       <div id="quest-main" class="quest-main"></div>
       <div id="quest-side" class="quest-side"></div>
     </div>
@@ -196,11 +209,14 @@
         <div><b>Рывок</b><span>Shift или кнопка-молния. Кратковременная неуязвимость.</span></div>
         <div><b>Способность</b><span>Q или кнопка-звезда. Тратит Память.</span></div>
         <div><b>Действие</b><span>E или кнопка-рука. Говорить, отдыхать, открывать, поднимать.</span></div>
-        <div><b>Карта</b><span>M или кнопка в углу. На большой карте ставь метки цели, опасности, добычи и дома.</span></div>
-        <div><b>Осколки</b><span>Падают с врагов. На верстаке у последнего очага покупай улучшения оружия.</span></div>
-        <div><b>Кооператив</b><span>Подойди к упавшему другу и держи «Действие», чтобы вернуть его.</span></div>
+        <div><b>Следы</b><span>Три следа ведут от дома к мельнице и Серым скалам. Осматривай их кнопкой «Действие».</span></div>
+        <div><b>Дом</b><span>Два этажа: внизу стол и очаг, наверху детская. Верни Лиру домой, накорми и уложи спать.</span></div>
+        <div><b>Монеты</b><span>Падают с врагов и выдаются за побочные дела. В лавке Ворона оружие и броня становятся сильнее с ценой.</span></div>
+        <div><b>Осколки</b><span>Прокачивают оружие на верстаке — дома или у последнего очага.</span></div>
+        <div><b>Кооператив</b><span>Друзья подключаются по WiFi. Подойди к упавшему брату и держи «Действие», чтобы вернуть его.</span></div>
+        <div><b>Серые</b><span>Похититель сильнее, когда вас много. Держитесь вместе и не отпускайте свет.</span></div>
       </div>
-      <p class="muted small">Способности сильны, но каждая из них стирает часть тебя. У костра Память возвращается. Пока. Мир открыт: сюжетную тропу можно оставить и уйти к Соляной топи, курганам, старой мельнице или Тихой Звезде.</p>
+      <p class="muted small">Сохранение происходит само после каждого шага истории — кнопки «сохранить» нет. Мир открыт: можно идти по следам Лиры, а можно свернуть к Соляной топи, мельнице, курганам или в пещеру. Мини-карта показывает только то, что рядом; большая карта открывается клавишей M.</p>
       <button id="btn-help-close" class="btn primary">Понятно</button>
     </div>
   </section>
@@ -244,6 +260,23 @@
     </div>
   </section>
 
+  <!-- ЛАВКА ВОРОНА -->
+  <section id="shop" class="screen overlay-screen hidden">
+    <div class="panel shop-panel">
+      <div class="shop-head">
+        <div>
+          <div class="eyebrow">лавка Ворона</div>
+          <h2>Сталь за монеты</h2>
+        </div>
+        <button id="btn-shop-close" class="round-btn" title="Закрыть лавку" aria-label="Закрыть лавку">×</button>
+      </div>
+      <div class="shop-purse">Монеты: <b id="shop-coins">0</b><span id="shop-equipment" class="shop-equipment"></span></div>
+      <div id="shop-list" class="shop-list"></div>
+      <p class="muted small">Дорогие вещи заметно сильнее. Купленное оружие и броня надеваются сразу, если они лучше текущих.</p>
+      <button id="btn-shop-done" class="btn primary">Готово</button>
+    </div>
+  </section>
+
   <!-- ВЕРСТАК -->
   <section id="workbench" class="screen overlay-screen hidden">
     <div class="panel workbench-panel">
@@ -264,7 +297,7 @@
   <!-- КОНЕЦ ГЛАВЫ -->
   <section id="end" class="screen overlay-screen hidden">
     <div class="panel end-panel">
-      <div class="eyebrow">конец первой главы</div>
+      <div class="eyebrow">конец второй главы</div>
       <h2 id="end-title">РАССВЕТ В ДОЛГ</h2>
       <div id="end-text" class="end-text"></div>
       <div id="end-stats" class="end-stats"></div>

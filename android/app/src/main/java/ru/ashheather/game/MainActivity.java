@@ -94,6 +94,7 @@ public class MainActivity extends Activity {
       staticServer = stat;
       staticPort = base;
       relayPort = base + 1;
+      LanDiscovery.startResponder(relay, staticPort, relayPort);
       Log.i(TAG, "serving http://127.0.0.1:" + staticPort + " relay ws://127.0.0.1:" + relayPort);
       return true;
     }
@@ -251,6 +252,7 @@ public class MainActivity extends Activity {
     super.onResume();
     hideSystemUi();
     if (webView != null) webView.onResume();
+    if (relayServer == null || !relayServer.hasHost()) LanDiscovery.warmUp();
   }
 
   @Override
@@ -313,6 +315,7 @@ public class MainActivity extends Activity {
 
   @Override
   protected void onDestroy() {
+    LanDiscovery.stopResponder();
     if (webView != null) {
       try {
         webView.loadUrl("about:blank");

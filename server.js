@@ -7,6 +7,10 @@ const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "0.0.0.0";
 const ROOT = join(import.meta.dir, "public");
 const MAX_PLAYERS = 4;
+const DISCOVERY_PORT = Number(process.env.DISCOVERY_PORT || 45999);
+const GAME_VERSION = "0.4.0";
+const DISCOVER_REQUEST = "ash-heather-discover";
+const DISCOVER_REPLY = "ash-heather-host";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -114,6 +118,101 @@ async function discoverLan() {
   return lanAddresses();
 }
 
+function discoveryPayload(ip) {
+  const host = hostPeer();
+  if (!host) return null;
+  const base = ip || lanAddresses()[0] || "127.0.0.1";
+  return {
+    t: DISCOVER_REPLY,
+    name: host.name ? `Пепел и Вереск · ${host.name}` : "Пепел и Вереск",
+    host: base,
+    port: PORT,
+    url: `http://${base}:${PORT}`,
+    ws: `ws://${base}:${PORT}/ws`,
+    players: peers.size,
+    maxPlayers: MAX_PLAYERS,
+    version: GAME_VERSION,
+  };
+}
+
+function parseDiscovery(raw) {
+  try {
+    const msg = JSON.parse(String(raw));
+    if (!msg || (msg.t !== DISCOVER_REQUEST && msg.type !== DISCOVER_REQUEST)) return null;
+    return msg;
+  } catch {
+    return null;
+  }
+}
+
+function activeDiscovery(timeout = 900) {
+  return new Promise((resolve) => {
+    const found = new Map();
+    let sock;
+    let timer;
+    const finish = () => {
+      clearTimeout(timer);
+      try { sock?.close(); } catch {}
+      resolve([...found.values()]);
+    };
+    try {
+      sock = dgram.createSocket({ type: "udp4", reuseAddr: true });
+      sock.on("error", finish);
+      sock.on("message", (raw, rinfo) => {
+        try {
+          const msg = JSON.parse(String(raw));
+          if (!msg || msg.t !== DISCOVER_REPLY || !msg.ws) return;
+          found.set(msg.ws, {
+            name: msg.name || "Пепел и Вереск",
+            host: msg.host || rinfo.address,
+            ws: msg.ws,
+            url: msg.url || `http://${rinfo.address}:${msg.port || PORT}`,
+            players: msg.players || 0,
+            maxPlayers: msg.maxPlayers || MAX_PLAYERS,
+            version: msg.version || GAME_VERSION,
+          });
+        } catch {}
+      });
+      sock.bind(0, () => {
+        try {
+          sock.setBroadcast(true);
+          const req = Buffer.from(JSON.stringify({ t: DISCOVER_REQUEST, v: 2 }));
+          sock.send(req, DISCOVERY_PORT, "255.255.255.255");
+          for (const addr of lanAddresses()) {
+            const parts = addr.split(".");
+            if (parts.length !== 4) continue;
+            sock.send(req, DISCOVERY_PORT, `${parts[0]}.${parts[1]}.${parts[2]}.255`);
+          }
+        } catch {}
+        timer = setTimeout(finish, timeout);
+      });
+    } catch {
+      finish();
+    }
+  });
+}
+
+function startDiscoveryResponder() {
+  const sock = dgram.createSocket({ type: "udp4", reuseAddr: true });
+  sock.on("error", (err) => {
+    if (process.env.DEBUG_RELAY) console.error("[discovery]", err?.message);
+    try { sock.close(); } catch {}
+  });
+  sock.on("message", (raw, rinfo) => {
+    if (!parseDiscovery(raw)) return;
+    const payload = discoveryPayload(rinfo.address);
+    if (!payload) return;
+    try {
+      sock.send(Buffer.from(JSON.stringify(payload)), rinfo.port, rinfo.address);
+    } catch {}
+  });
+  sock.bind(DISCOVERY_PORT, "0.0.0.0", () => {
+    try { sock.setBroadcast(true); } catch {}
+    console.log(`  Поиск:    udp://${DISCOVERY_PORT}`);
+  });
+  return sock;
+}
+
 async function serveStatic(pathname) {
   let rel = decodeURIComponent(pathname);
   if (rel === "/" || rel === "") rel = "/index.html";
@@ -152,8 +251,23 @@ const server = Bun.serve({
         port: PORT,
         wsPort: PORT,
         lan: lanAddresses(),
-        version: "0.3.0",
+        version: GAME_VERSION,
       }, {
+        headers: {
+          "Cache-Control": "no-store",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+    }
+    if (url.pathname === "/api/discover") {
+      let servers = [];
+      if (hostPeer()) {
+        const payload = discoveryPayload(lanAddresses()[0]);
+        if (payload) servers = [payload];
+      } else {
+        servers = await activeDiscovery(700);
+      }
+      return Response.json({ servers, version: GAME_VERSION }, {
         headers: {
           "Cache-Control": "no-store",
           "Access-Control-Allow-Origin": "*",
@@ -272,6 +386,7 @@ const server = Bun.serve({
 });
 
 const addrs = await discoverLan();
+startDiscoveryResponder();
 console.log("");
 console.log("  ╔══════════════════════════════════════════════╗");
 console.log("  ║            ПЕПЕЛ И ВЕРЕСК                    ║");
@@ -281,5 +396,5 @@ console.log("");
 console.log(`  Локально:  http://localhost:${PORT}`);
 for (const a of addrs) console.log(`  Телефон:   http://${a}:${PORT}`);
 console.log("");
-console.log("  Хост: нажми «Создать игру». Друзья открывают ссылку и жмут «Присоединиться».");
+console.log("  Хост: нажми «Создать игру». Друзья увидят комнату в списке рядом.");
 console.log("");
