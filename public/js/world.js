@@ -634,16 +634,17 @@ export class World {
     }
 
     let hit = 0;
+    const meleeRange = def.range * aimMul;
     for (const e of this.enemies) {
       if (e.hp <= 0) continue;
       const d = dist(p.x, p.y, e.x, e.y);
-      if (d > def.range + e.radius) continue;
+      if (d > meleeRange + e.radius) continue;
       const a = angleTo(p.x, p.y, e.x, e.y);
       if (Math.abs(angleDiff(a, p.facing)) > 0.95) continue;
       this.damageEnemy(e, dmg, p);
       hit++;
     }
-    this.emit("slash", { x: p.x, y: p.y, a: p.facing, range: def.range, cls: p.cls, hits: hit });
+    this.emit("slash", { x: p.x, y: p.y, a: p.facing, range: meleeRange, cls: p.cls, hits: hit });
   }
 
   tryAbility(p) {

@@ -804,7 +804,8 @@ function tick(dt) {
   }
 
   if ((mode === "solo" || mode === "host") && world) {
-    if (!paused && !gameEnded) {
+    const soloOverlayPause = mode === "solo" && overlayOpen;
+    if (!paused && !gameEnded && !soloOverlayPause) {
       world.update(dt);
       handleEvents(world.events);
       saveTimer -= dt;
