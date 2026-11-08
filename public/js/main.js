@@ -655,7 +655,8 @@ const recentActions = [];
 const input = new Input({
   onAction: (action) => {
     const now = performance.now();
-    if (now - (lastActionAt.get(action) || 0) < (ACTION_GAP[action] || 80)) return;
+    const last = lastActionAt.get(action);
+    if (last != null && now - last < (ACTION_GAP[action] || 80)) return;
     lastActionAt.set(action, now);
     recentActions.push({ action, at: Math.round(now) });
     if (recentActions.length > 60) recentActions.shift();

@@ -108,7 +108,9 @@ export class Input {
     if (this.held.has(action)) return false;
     const now = nowMs();
     const gap = ACTION_GAP[action] || 90;
-    if (now - (this.lastActionAt.get(action) || 0) < gap) return false;
+    // Именно has(): ноль — валидная метка времени на старте страницы.
+    const last = this.lastActionAt.get(action);
+    if (last != null && now - last < gap) return false;
     this.lastActionAt.set(action, now);
     const el = this.buttonFor(action);
     this.held.add(action);
