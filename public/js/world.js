@@ -69,7 +69,10 @@ export class World {
   }
 
   emit(type, data = {}) {
-    const e = { id: this.eventId++, type, time: this.time, ...data };
+    // eid — порядковый номер события. Поле id принадлежит игроку/врагу,
+    // и раньше оно затирало счётчик: события с id игрока обрабатывались
+    // заново каждый кадр (верстак открывался бесконечно).
+    const e = { eid: this.eventId++, type, time: this.time, ...data };
     this.events.push(e);
     if (this.events.length > 240) this.events.splice(0, this.events.length - 240);
     return e;
@@ -164,6 +167,7 @@ export class World {
       cooldown: 0,
       dodgeCd: 0,
       abilityCd: 0,
+      interactCd: 0,
       dodgeTimer: 0,
       dodgeDir: { x: 0, y: 1 },
       invuln: 1.2,
@@ -265,6 +269,16 @@ export class World {
     }
     if (p.downed) return;
     if (p.talking) return;
+    // Заслон от повторных action-сообщений (дребезг тача, дубли по сети).
+    // Кулдауны способностей и атак всё равно больше, здесь только защита
+    // от двух событий, пришедших в один кадр.
+    const actionGap = { attack: 0.04, dodge: 0.05, ability: 0.06, interact: 0.12 }[action];
+    if (actionGap) {
+      if (!p.actionAt) p.actionAt = {};
+      const last = p.actionAt[action];
+      if (last != null && this.time - last < actionGap && this.time >= last) return;
+      p.actionAt[action] = this.time;
+    }
     if (action === "upgrade") {
       this.upgradeWeapon(p, data.key);
       return;
@@ -274,6 +288,10 @@ export class World {
         this.cancelRevive(p);
         return;
       }
+      // Кулдаун взаимодействия живёт на входе в действие, чтобы прямой
+      // вызов tryInteract из тестов/скриптов оставался свободным.
+      if ((p.interactCd || 0) > 0) return;
+      p.interactCd = 0.55;
       this.tryInteract(p);
       return;
     }
@@ -291,6 +309,7 @@ export class World {
       p.cooldown = Math.max(0, p.cooldown - dt);
       p.dodgeCd = Math.max(0, p.dodgeCd - dt);
       p.abilityCd = Math.max(0, p.abilityCd - dt);
+      p.interactCd = Math.max(0, (p.interactCd || 0) - dt);
       p.invuln = Math.max(0, p.invuln - dt);
       p.attackAnim = Math.max(0, p.attackAnim - dt);
       p.hitFlash = Math.max(0, p.hitFlash - dt);
@@ -620,9 +639,10 @@ export class World {
 
     if (def.ranged) {
       const a = p.facing;
+      const origin = this.projectileOrigin(p, a, 16);
       this.spawnProjectile({
-        x: p.x + Math.cos(a) * 16,
-        y: p.y + Math.sin(a) * 16,
+        x: origin.x,
+        y: origin.y,
         vx: Math.cos(a) * def.projectileSpeed * aimMul,
         vy: Math.sin(a) * def.projectileSpeed * aimMul,
         damage: dmg,
@@ -678,9 +698,10 @@ export class World {
       }
       this.emit("nova", { x: p.x, y: p.y, radius: ab.radius, hits: hit });
     } else if (ab.id === "pierce") {
+      const origin = this.projectileOrigin(p, p.facing, 16);
       this.spawnProjectile({
-        x: p.x + Math.cos(p.facing) * 16,
-        y: p.y + Math.sin(p.facing) * 16,
+        x: origin.x,
+        y: origin.y,
         vx: Math.cos(p.facing) * ab.speed,
         vy: Math.sin(p.facing) * ab.speed,
         damage: Math.round(ab.damage * abilityMul) + (p.level - 1) * 2,
@@ -1295,9 +1316,20 @@ export class World {
     }
   }
 
+  // Стрела не должна рождаться внутри очага/верстака и исчезать в тот же кадр.
+  projectileOrigin(p, angle, dist) {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    for (let d = dist; d >= 3; d -= 2) {
+      const x = p.x + cos * d;
+      const y = p.y + sin * d;
+      if (!this.map.isBlocked(x, y, 3)) return { x, y };
+    }
+    return { x: p.x, y: p.y };
+  }
+
   spawnProjectile(opts) {
-    const p = {
-      id: uid("p"),
+    const p = {      id: uid("p"),
       x: opts.x,
       y: opts.y,
       vx: opts.vx,

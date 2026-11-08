@@ -586,7 +586,10 @@ function addRemotePlayer(j) {
 
 function maxEventId(events) {
   let max = 0;
-  for (const e of events || []) if (e.id > max) max = e.id;
+  for (const e of events || []) {
+    const id = Number(e?.eid);
+    if (Number.isFinite(id) && id > max) max = id;
+  }
   return max;
 }
 
@@ -643,8 +646,19 @@ function handleClientClose() {
 }
 
 /* ---------- ввод ---------- */
+// Второй (прикладной) заслон от дребезга действий. Первый — в Input,
+// третий — кулдауны мира. Даже если событие придёт дважды, действие одно.
+const ACTION_GAP = { attack: 100, dodge: 120, ability: 150, interact: 180, map: 200 };
+const lastActionAt = new Map();
+const recentActions = [];
+
 const input = new Input({
   onAction: (action) => {
+    const now = performance.now();
+    if (now - (lastActionAt.get(action) || 0) < (ACTION_GAP[action] || 80)) return;
+    lastActionAt.set(action, now);
+    recentActions.push({ action, at: Math.round(now) });
+    if (recentActions.length > 60) recentActions.shift();
     audio.unlock();
     if (!running || paused || gameEnded || !myId) return;
     if (!ui.el.settings.classList.contains("hidden") || !ui.el.help.classList.contains("hidden")) return;
@@ -710,7 +724,7 @@ function toggleMap() {
     return;
   }
   ui.closeWorkbench();
-  input.clearHeld();
+  input.clearPressed();
   ui.openMap();
   audio.play("map");
 }
@@ -739,7 +753,7 @@ function resumeGame() {
   if (!running) return;
   paused = false;
   input.setEnabled(true);
-  input.clearHeld();
+  input.clearPressed();
   ui.hidePause();
   ui.el.settings?.classList.add("hidden");
 }
@@ -858,7 +872,7 @@ function tick(dt) {
       ui.updateWorkbench(me);
     }
     if (me.dialogue && !gameEnded) {
-      input.clearHeld();
+      input.clearPressed();
       ui.renderDialogue(me.dialogue, {
         choose: (i) => sendAction("choice", { index: i }),
         close: () => sendAction("closeDialogue"),
@@ -992,8 +1006,9 @@ function localPlayerState() {
 function handleEvents(events) {
   if (!events || !events.length) return;
   for (const e of events) {
-    if (!e || e.id <= lastEventId) continue;
-    lastEventId = e.id;
+    const eid = Number(e?.eid);
+    if (!Number.isFinite(eid) || eid <= lastEventId) continue;
+    lastEventId = eid;
     routeEvent(e);
   }
 }
@@ -1145,7 +1160,8 @@ function routeEvent(e) {
       break;
     case "workbench":
       if (e.id === myId) {
-        input.clearHeld();
+        // Не сбрасываем удержание: палец всё ещё на кнопке.
+        input.clearPressed();
         ui.openWorkbench(localPlayerState());
         audio.play("ui");
       }
@@ -1277,6 +1293,7 @@ function boot() {
     get myId() { return myId; },
     get latestSnap() { return latestSnap; },
     get running() { return running; },
+    get recentActions() { return recentActions; },
     input,
     renderer,
     ui,

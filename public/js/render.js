@@ -1293,25 +1293,89 @@ Renderer.prototype.drawPlayer = function (ctx, p, myId, scene) {
     ctx.fillStyle = "#ffd99a";
     ctx.fillRect(-2.5, -30.5, 5, 6);
   } else if (p.cls === "hunter") {
-    ctx.strokeStyle = "#7b6142";
-    ctx.lineWidth = 1.8;
-    ctx.beginPath();
-    ctx.arc(0, -22, 12, -1.15, 1.15);
-    ctx.stroke();
-    ctx.strokeStyle = "rgba(220,220,210,0.45)";
-    ctx.lineWidth = 0.9;
-    ctx.beginPath();
-    ctx.moveTo(4.5, -33.2);
-    ctx.lineTo(4.5, -10.8);
-    ctx.stroke();
-    if (p.attackAnim > 0) {
-      ctx.strokeStyle = `rgba(220,235,210,${p.attackAnim * 3})`;
-      ctx.lineWidth = 1;
+    // Лук: вид сверху. Плечи изогнуты вперёд, тетива натянута между
+    // кончиками, у рукояти лежит стрела. При выстреле тетива дрожит.
+    const gripY = -22;
+    const tipY = -24;
+    const draw = p.attackAnim > 0 ? clamp(p.attackAnim / 0.22, 0, 1) : 0;
+    const twang = draw > 0 ? Math.sin((1 - draw) * Math.PI * 3) * draw * 2.4 : 0;
+
+    const limbs = () => {
       ctx.beginPath();
-      ctx.moveTo(5, -12);
-      ctx.lineTo(5, -40);
+      ctx.moveTo(0, gripY);
+      ctx.bezierCurveTo(5, -31, 11, -34, 16, tipY);
+      ctx.quadraticCurveTo(19.5, -23.5, 21, -30);
+      ctx.moveTo(0, gripY);
+      ctx.bezierCurveTo(-5, -31, -11, -34, -16, tipY);
+      ctx.quadraticCurveTo(-19.5, -23.5, -21, -30);
+    };
+
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    // тёмный контур дерева
+    ctx.strokeStyle = "#4b3622";
+    ctx.lineWidth = 3.6;
+    limbs();
+    ctx.stroke();
+    // тёплый блик по волокну
+    ctx.strokeStyle = "#9a7648";
+    ctx.lineWidth = 1.5;
+    limbs();
+    ctx.stroke();
+
+    // рукоять и кожаная обмотка
+    ctx.strokeStyle = "#3a2919";
+    ctx.lineWidth = 4.4;
+    ctx.beginPath();
+    ctx.moveTo(0, gripY - 3.5);
+    ctx.lineTo(0, gripY + 3.5);
+    ctx.stroke();
+    ctx.strokeStyle = "#b08a55";
+    ctx.lineWidth = 1;
+    for (const oy of [-2.4, 0, 2.4]) {
+      ctx.beginPath();
+      ctx.moveTo(-2, gripY + oy);
+      ctx.lineTo(2, gripY + oy);
       ctx.stroke();
     }
+
+    // тетива (при выстреле — колебание)
+    const nockY = tipY + twang;
+    ctx.strokeStyle = "rgba(235,231,214,0.72)";
+    ctx.lineWidth = 0.95;
+    ctx.beginPath();
+    ctx.moveTo(-16, tipY);
+    ctx.lineTo(0, nockY);
+    ctx.lineTo(16, tipY);
+    ctx.stroke();
+
+    // стрела
+    const arrowAlpha = draw > 0 ? Math.max(0.15, 1 - draw * 1.4) : 1;
+    ctx.globalAlpha *= arrowAlpha;
+    ctx.strokeStyle = "#cdbb95";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(0, nockY);
+    ctx.lineTo(0, nockY - 16);
+    ctx.stroke();
+    // оперение
+    ctx.strokeStyle = "rgba(214,226,198,0.9)";
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(0, nockY - 1);
+    ctx.lineTo(-3, nockY - 4.5);
+    ctx.moveTo(0, nockY - 1);
+    ctx.lineTo(3, nockY - 4.5);
+    ctx.stroke();
+    // наконечник
+    ctx.fillStyle = "#d9dfd0";
+    ctx.beginPath();
+    ctx.moveTo(-1.8, nockY - 14);
+    ctx.lineTo(0, nockY - 17.5);
+    ctx.lineTo(1.8, nockY - 14);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = alpha;
   } else {
     // executioner axe
     ctx.strokeStyle = "#5d4a35";
@@ -1336,7 +1400,32 @@ Renderer.prototype.drawPlayer = function (ctx, p, myId, scene) {
   }
   ctx.restore();
 
-  if (p.attackAnim > 0) {
+  if (p.attackAnim > 0 && p.cls === "hunter") {
+    // У лука нет широкого взмаха — только короткий след улетевшей стрелы.
+    const progress = 1 - clamp(p.attackAnim / 0.22, 0, 1);
+    const a = facing;
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    const head = 18 + progress * 26;
+    const tail = Math.max(0, head - 26);
+    ctx.save();
+    ctx.globalAlpha = (1 - progress) * 0.75;
+    ctx.strokeStyle = "rgba(215,232,200,0.9)";
+    ctx.lineWidth = 1.7;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(p.x + cos * tail, p.y - 6 + sin * tail);
+    ctx.lineTo(p.x + cos * head, p.y - 6 + sin * head);
+    ctx.stroke();
+    ctx.fillStyle = "rgba(230,242,220,0.95)";
+    ctx.beginPath();
+    ctx.moveTo(p.x + cos * (head + 4), p.y - 6 + sin * (head + 4));
+    ctx.lineTo(p.x + cos * (head - 2) - sin * 2.4, p.y - 6 + sin * (head - 2) + cos * 2.4);
+    ctx.lineTo(p.x + cos * (head - 2) + sin * 2.4, p.y - 6 + sin * (head - 2) - cos * 2.4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  } else if (p.attackAnim > 0) {
     const progress = 1 - clamp(p.attackAnim / 0.22, 0, 1);
     const a0 = facing - 1.02 + progress * 1.5;
     const radius = p.cls === "executioner" ? 35 : p.cls === "hunter" ? 30 : 27;

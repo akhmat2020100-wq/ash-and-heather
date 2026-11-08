@@ -346,6 +346,13 @@ check(
 );
 check(w14.flags.riteStarted === true && w14.flags.chapelOpen === true, "восстановлено открытие часовни");
 
+// Регрессия: id игрока раньше затирал порядковый номер события, из-за чего
+// верстак/диалоги/урон обрабатывались заново каждый кадр.
+const wEvents = new World({ seed: 101 });
+const probe = wEvents.emit("probe", { id: "player-x" });
+check(typeof probe.eid === "number" && probe.eid > 0, "у события есть числовой eid");
+check(probe.id === "player-x", "id игрока не затирает порядковый номер");
+
 if (failed) {
   console.error(`\n${failed} проверок не прошло`);
   process.exit(1);

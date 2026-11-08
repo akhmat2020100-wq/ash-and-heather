@@ -1019,7 +1019,7 @@ html, body {
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: transform 0.08s, border-color 0.2s;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
 }
 .action-btn svg {
   width: 26px;
@@ -1058,7 +1058,7 @@ html, body {
   opacity: 0;
 }
 .action-btn.on-cooldown .cooldown { opacity: 1; }
-.action-btn:active { transform: scale(0.93); }
+.action-btn:active { filter: brightness(1.12); }
 .action-btn.attack {
   width: 92px;
   height: 92px;

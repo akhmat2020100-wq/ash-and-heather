@@ -413,40 +413,130 @@ if (smokeMode === "host") {
   if (!ash.scene.players.some((p) => p.id === "local")) throw new Error("игрок не попал в сцену");
   if (!ash.scene.props?.length) throw new Error("в сцене нет props");
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const touchPoint = (id) => ({ identifier: id, clientX: 0, clientY: 0 });
+  const touchStart = (el, id) => {
+    fireEl(el, "touchstart", {
+      changedTouches: [touchPoint(id)],
+      touches: [touchPoint(id)],
+      pointerType: "touch",
+      preventDefault() {},
+    });
+  };
+  const touchEnd = (id, remaining = []) => {
+    windowStub.dispatchEvent({
+      type: "touchend",
+      target: null,
+      changedTouches: [touchPoint(id)],
+      touches: remaining.map(touchPoint),
+      pointerType: "touch",
+      preventDefault() {},
+    });
+  };
+
   key("Space");
   frames(3);
-  if (me.attackAnim <= 0 && me.attackCd <= 0) throw new Error("удар не сработал");
+  if (!(me.attackAnim > 0)) throw new Error("удар с клавиатуры не сработал");
   key("Space", "keyup");
+  await sleep(120);
 
   // Регрессия: удар строго один на нажатие, удержание не повторяет атаку.
   const attackButton = dataAction.find((el) => el.dataset.action === "attack");
   if (!attackButton) throw new Error("нет кнопки удара");
-  const startEventId = ash.world.eventId;
+  let startEventId = ash.world.eventId;
   const slashCount = () =>
-    ash.world.events.filter((e) => e.type === "slash" && e.id >= startEventId).length;
+    ash.world.events.filter((e) => e.type === "slash" && e.eid >= startEventId).length;
+
+  // Тач: одно нажатие — один удар.
   me.cooldown = 0;
-  fireEl(attackButton, "pointerdown", { pointerId: 101 });
+  touchStart(attackButton, 201);
   frames(2);
   if (slashCount() !== 1)
-    throw new Error(`на нажатие пришло ${slashCount()} ударов вместо 1`);
-  frames(60);
-  if (slashCount() !== 1) throw new Error("удержание кнопки повторяет удар");
-  fireEl(attackButton, "pointerdown", { pointerId: 102 });
-  frames(2);
-  if (slashCount() !== 1) throw new Error("повторный pointerdown продублировал удар");
-  fireEl(attackButton, "pointerup", { pointerId: 101 });
-  frames(30);
-  if (slashCount() !== 1) throw new Error("после отпускания удар повторился");
-  me.cooldown = 0;
-  fireEl(attackButton, "pointerdown", { pointerId: 103 });
-  frames(2);
-  if (slashCount() !== 2) throw new Error("второе нажатие не дало удар");
-  windowStub.dispatchEvent({ type: "touchend", target: attackButton, preventDefault() {} });
-  if (attackButton.classList.contains("pressed")) throw new Error("touchend не отпустил кнопку");
+    throw new Error(`на касание пришло ${slashCount()} ударов вместо 1`);
 
+  // Шторм повторных touchstart/pointerdown, ложные pointercancel/leave.
+  touchStart(attackButton, 201);
+  touchStart(attackButton, 202);
+  fireEl(attackButton, "pointerdown", { pointerId: 203, pointerType: "touch" });
+  fireEl(attackButton, "pointercancel", { pointerId: 201, pointerType: "touch" });
+  fireEl(attackButton, "pointerleave", { pointerId: 201, pointerType: "touch" });
+  fireEl(attackButton, "lostpointercapture", { pointerId: 201, pointerType: "touch" });
+  me.cooldown = 0;
+  frames(40);
+  if (slashCount() !== 1) throw new Error("шторм событий повторил удар");
+  if (!ash.input.isHeld("attack")) throw new Error("ложный pointercancel отпустил удар");
+
+  touchEnd(201);
+  if (attackButton.classList.contains("pressed")) throw new Error("touchend не отпустил кнопку");
+  if (ash.input.isHeld("attack")) throw new Error("touchend не снял удержание");
+
+  // Синтетический mouse-дубль сразу после тача не должен бить ещё раз.
+  me.cooldown = 0;
+  fireEl(attackButton, "pointerdown", { pointerId: 900, pointerType: "mouse" });
+  frames(2);
+  if (slashCount() !== 1) throw new Error("синтетический mouse-дубль повторил удар");
+  fireEl(attackButton, "pointerup", { pointerId: 900, pointerType: "mouse" });
+
+  // Мышь/перо: тоже строго одно нажатие.
+  ash.input.lastTouchAt = -Infinity;
+  await sleep(120);
+  me.cooldown = 0;
+  fireEl(attackButton, "pointerdown", { pointerId: 301, pointerType: "mouse" });
+  frames(2);
+  if (slashCount() !== 2) throw new Error("мышиное нажатие не дало удар");
+  fireEl(attackButton, "pointerdown", { pointerId: 302, pointerType: "mouse" });
+  me.cooldown = 0;
+  frames(40);
+  if (slashCount() !== 2) throw new Error("повторный pointerdown продублировал удар");
+  fireEl(attackButton, "pointerup", { pointerId: 301, pointerType: "mouse" });
+  fireEl(attackButton, "pointerup", { pointerId: 302, pointerType: "mouse" });
+  if (ash.input.isHeld("attack")) throw new Error("pointerup не снял удержание");
+
+  // Способность: одно нажатие — одна нова, даже при шторме касаний.
+  const abilityButton = dataAction.find((el) => el.dataset.action === "ability");
+  if (!abilityButton) throw new Error("нет кнопки способности");
+  startEventId = ash.world.eventId;
+  const novaCount = () =>
+    ash.world.events.filter((e) => e.type === "nova" && e.eid >= startEventId).length;
+  me.abilityCd = 0;
+  me.memory = 100;
+  await sleep(180);
+  touchStart(abilityButton, 401);
+  frames(2);
+  if (novaCount() !== 1) throw new Error(`на касание пришло ${novaCount()} способностей`);
+  touchStart(abilityButton, 401);
+  touchStart(abilityButton, 402);
+  fireEl(abilityButton, "pointercancel", { pointerId: 401, pointerType: "touch" });
+  me.memory = 100;
+  frames(20);
+  if (novaCount() !== 1) throw new Error("шторм событий повторил способность");
+  if (!ash.input.isHeld("ability")) throw new Error("ложный pointercancel отпустил способность");
+  touchEnd(401);
+
+  // Пока кулдаун идёт, новое нажатие не даёт вторую нову.
+  me.memory = 100;
+  await sleep(180);
+  touchStart(abilityButton, 403);
+  frames(2);
+  if (novaCount() !== 1) throw new Error("способность пробила кулдаун");
+  touchEnd(403);
+
+  // После сброса кулдауна новое нажатие снова работает.
+  me.abilityCd = 0;
+  me.memory = 100;
+  await sleep(180);
+  frames(4); // мировой зазор действий считается по игровому времени
+  touchStart(abilityButton, 404);
+  frames(2);
+  if (novaCount() !== 2) throw new Error("второе нажатие способности не сработало");
+  touchEnd(404);
+
+  // Диалог с Ирмой по-прежнему открывается.
   const irma = ash.world.map.landmarks.irma;
   me.x = irma.x + 12;
   me.y = irma.y + 12;
+  me.interactCd = 0;
+  frames(20); // пережидаем мировой зазор действий
   ash.world.action("local", "interact");
   frames(2);
   if (!me.dialogueView) throw new Error("диалог с Ирмой не открылся");
@@ -454,7 +544,65 @@ if (smokeMode === "host") {
   ash.ui.finishTyping();
   ash.world.chooseDialogue(me, 2);
   if (ash.world.quest.main.stage !== 1) throw new Error("квест не начался");
+  if (me.talking) ash.world.endDialogue(me);
   frames(3);
+
+  // Верстак: открытие не сбрасывает удержание кнопки и не даёт
+  // бесконечно переоткрывать/закрывать окно.
+  const interactButton = dataAction.find((el) => el.dataset.action === "interact");
+  if (!interactButton) throw new Error("нет кнопки действия");
+  const bench = ash.world.map.landmarks.workbench;
+  me.x = bench.x + 34;
+  me.y = bench.y + 34;
+  me.interactCd = 0;
+  frames(20);
+  startEventId = ash.world.eventId;
+  const benchCount = () =>
+    ash.world.events.filter((e) => e.type === "workbench" && e.eid >= startEventId).length;
+
+  await sleep(220);
+  touchStart(interactButton, 501);
+  frames(2);
+  if (!ash.ui.isWorkbenchOpen()) throw new Error("верстак не открылся с кнопки");
+  if (benchCount() !== 1) throw new Error(`верстак открылся ${benchCount()} раз`);
+  const benchEvent = ash.world.events.find((e) => e.type === "workbench" && e.eid >= startEventId);
+  if (!benchEvent || typeof benchEvent.eid !== "number" || benchEvent.id !== "local") {
+    throw new Error("у события затёрт порядковый номер eid");
+  }
+
+  // Палец всё ещё на кнопке: повторы не должны закрыть/открыть окно.
+  touchStart(interactButton, 501);
+  touchStart(interactButton, 502);
+  fireEl(interactButton, "pointerdown", { pointerId: 503, pointerType: "touch" });
+  fireEl(interactButton, "pointercancel", { pointerId: 501, pointerType: "touch" });
+  frames(10);
+  if (!ash.ui.isWorkbenchOpen()) throw new Error("шторм событий закрыл верстак");
+  if (benchCount() !== 1) throw new Error("шторм событий переоткрыл верстак");
+  if (!ash.input.isHeld("interact")) throw new Error("ложный pointercancel отпустил действие");
+  touchEnd(501);
+
+  // Новое осознанное нажатие закрывает окно.
+  await sleep(220);
+  touchStart(interactButton, 504);
+  frames(2);
+  if (ash.ui.isWorkbenchOpen()) throw new Error("повторное нажатие не закрыло верстак");
+  touchEnd(504);
+
+  // Сразу переоткрыть нельзя: у мира свой кулдаун взаимодействия.
+  await sleep(220);
+  touchStart(interactButton, 505);
+  frames(2);
+  if (ash.ui.isWorkbenchOpen()) throw new Error("верстак переоткрылся без кулдауна");
+  touchEnd(505);
+
+  // Кулдаун истёк — можно снова.
+  frames(40);
+  await sleep(220);
+  touchStart(interactButton, 506);
+  frames(2);
+  if (!ash.ui.isWorkbenchOpen()) throw new Error("верстак не открылся после кулдауна");
+  touchEnd(506);
+  ash.ui.closeWorkbench();
 
   const markers = [{ x: me.x + 40, y: me.y, type: "goal", label: "Тестовая метка" }];
   ash.ui.setMarkers(markers);
